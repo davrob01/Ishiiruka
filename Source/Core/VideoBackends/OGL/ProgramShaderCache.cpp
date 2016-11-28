@@ -24,15 +24,13 @@
 
 namespace OGL
 {
-
+u32 ProgramShaderCache::s_ubo_buffer_size;
 u32 ProgramShaderCache::s_v_ubo_buffer_size;
 u32 ProgramShaderCache::s_p_ubo_buffer_size;
 u32 ProgramShaderCache::s_g_ubo_buffer_size;
 s32 ProgramShaderCache::s_ubo_align;
 
-static std::unique_ptr<StreamBuffer> s_v_buffer;
-static std::unique_ptr<StreamBuffer> s_p_buffer;
-static std::unique_ptr<StreamBuffer> s_g_buffer;
+static std::unique_ptr<StreamBuffer> s_buffer;
 static int num_failures = 0;
 
 static LinearDiskCache<SHADERUID, u8> g_program_disk_cache;
@@ -41,7 +39,7 @@ ProgramShaderCache::PCache* ProgramShaderCache::pshaders;
 ProgramShaderCache::PCacheEntry* ProgramShaderCache::last_entry;
 SHADERUID ProgramShaderCache::last_uid;
 
-static char s_glsl_header[1024] = "";
+static char s_glsl_header[2048] = "";
 
 static std::string GetGLSLVersionString()
 {
@@ -151,47 +149,55 @@ void SHADER::Bind()
 
 void ProgramShaderCache::UploadConstants()
 {
-	if (VertexShaderManager::IsDirty())
-	{
-		glBindBuffer(GL_UNIFORM_BUFFER, s_v_buffer->m_buffer);
-		auto buffer = s_v_buffer->Map(s_v_ubo_buffer_size, s_ubo_align);
-		size_t vertex_buffer_size = VertexShaderManager::ConstantBufferSize * sizeof(float);
-		memcpy(buffer.first, VertexShaderManager::GetBuffer(), vertex_buffer_size);
-
-		s_v_buffer->Unmap(s_v_ubo_buffer_size);
-		glBindBufferRange(GL_UNIFORM_BUFFER, 2, s_v_buffer->m_buffer,
-			buffer.second,
-			vertex_buffer_size);
-		VertexShaderManager::Clear();
-		ADDSTAT(stats.thisFrame.bytesUniformStreamed, s_v_ubo_buffer_size);
-	}
+	s32 required_size = 0;
+	u32 mask = 0;
 	if (PixelShaderManager::IsDirty())
 	{
-		glBindBuffer(GL_UNIFORM_BUFFER, s_p_buffer->m_buffer);
-		auto buffer = s_p_buffer->Map(s_p_ubo_buffer_size, s_ubo_align);
-		size_t pixel_buffer_size = C_PCONST_END * 4 * sizeof(float);
-		memcpy(buffer.first, PixelShaderManager::GetBuffer(), pixel_buffer_size);
-
-		s_p_buffer->Unmap(s_p_ubo_buffer_size);
-		glBindBufferRange(GL_UNIFORM_BUFFER, 1, s_p_buffer->m_buffer,
-			buffer.second,
-			pixel_buffer_size);
-
-		PixelShaderManager::Clear();
-		ADDSTAT(stats.thisFrame.bytesUniformStreamed, s_p_ubo_buffer_size);
+		required_size += s_p_ubo_buffer_size;
+		mask |= 1;
+	}
+	if (VertexShaderManager::IsDirty())
+	{
+		required_size += s_v_ubo_buffer_size;
+		mask |= 2;
 	}
 	if (GeometryShaderManager::IsDirty())
 	{
-		glBindBuffer(GL_UNIFORM_BUFFER, s_g_buffer->m_buffer);
-		auto buffer = s_g_buffer->Map(s_g_ubo_buffer_size, s_ubo_align);
-		memcpy(buffer.first, &GeometryShaderManager::constants, sizeof(GeometryShaderConstants));
-
-		s_g_buffer->Unmap(s_g_ubo_buffer_size);
-		glBindBufferRange(GL_UNIFORM_BUFFER, 3, s_g_buffer->m_buffer, buffer.second, sizeof(GeometryShaderConstants));
-
-		GeometryShaderManager::Clear();
-
-		ADDSTAT(stats.thisFrame.bytesUniformStreamed, s_g_ubo_buffer_size);
+		required_size += s_g_ubo_buffer_size;
+		mask |= 4;
+	}
+	if (!s_buffer->CanStreamWithoutRestart(required_size))
+	{
+		required_size = s_ubo_buffer_size;
+		mask = 7;
+	}
+	if (mask)
+	{
+		glBindBuffer(GL_UNIFORM_BUFFER, s_buffer->m_buffer);
+		if (mask & 1)
+		{
+			const u32 pixel_buffer_size = C_PCONST_END * 4 * sizeof(float);
+			glBindBufferRange(GL_UNIFORM_BUFFER, 1, s_buffer->m_buffer,
+				s_buffer->Stream(pixel_buffer_size, s_ubo_align, PixelShaderManager::GetBuffer()),
+				pixel_buffer_size);
+			PixelShaderManager::Clear();
+		}
+		if (mask & 2)
+		{
+			const u32 vertex_buffer_size = VertexShaderManager::ConstantBufferSize * sizeof(float);
+			glBindBufferRange(GL_UNIFORM_BUFFER, 2, s_buffer->m_buffer,
+				s_buffer->Stream(vertex_buffer_size, s_ubo_align, VertexShaderManager::GetBuffer()),
+				vertex_buffer_size);
+			VertexShaderManager::Clear();
+		}
+		if (mask & 4)
+		{
+			glBindBufferRange(GL_UNIFORM_BUFFER, 3, s_buffer->m_buffer,
+				s_buffer->Stream(sizeof(GeometryShaderConstants), s_ubo_align, &GeometryShaderManager::constants),
+				sizeof(GeometryShaderConstants));
+			GeometryShaderManager::Clear();
+		}
+		ADDSTAT(stats.thisFrame.bytesUniformStreamed, required_size);
 	}
 }
 
@@ -433,28 +439,26 @@ void ProgramShaderCache::Init()
 	// if we generate a buffer that isn't aligned
 	// then the UBO will fail.
 	glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &s_ubo_align);
-
 	s_p_ubo_buffer_size = ROUND_UP(C_PCONST_END * 4 * sizeof(float), s_ubo_align);
 	s_v_ubo_buffer_size = ROUND_UP(VertexShaderManager::ConstantBufferSize * sizeof(float), s_ubo_align);
 	s_g_ubo_buffer_size = ROUND_UP(sizeof(GeometryShaderConstants), s_ubo_align);
+	s_ubo_buffer_size = s_p_ubo_buffer_size
+		+ s_v_ubo_buffer_size
+		+ s_g_ubo_buffer_size;
 
 	// We multiply by *4*4 because we need to get down to basic machine units.
 	// So multiply by four to get how many floats we have from vec4s
 	// Then once more to get bytes
-	s_p_buffer.reset();
-	s_v_buffer.reset();
-	s_g_buffer.reset();
+	s_buffer.reset();
 
-	s_p_buffer = StreamBuffer::Create(GL_UNIFORM_BUFFER, s_p_ubo_buffer_size * 1024);
-	s_v_buffer = StreamBuffer::Create(GL_UNIFORM_BUFFER, s_v_ubo_buffer_size * 1024);
-	s_g_buffer = StreamBuffer::Create(GL_UNIFORM_BUFFER, s_g_ubo_buffer_size * 1024);
+	s_buffer = StreamBuffer::Create(GL_UNIFORM_BUFFER, s_ubo_buffer_size * 2048);
 
-	pKey_t gameid = (pKey_t)GetMurmurHash3(reinterpret_cast<const u8*>(SConfig::GetInstance().m_strUniqueID.data()), (u32)SConfig::GetInstance().m_strUniqueID.size(), 0);
+	pKey_t gameid = (pKey_t)GetMurmurHash3(reinterpret_cast<const u8*>(SConfig::GetInstance().m_strGameID.data()), (u32)SConfig::GetInstance().m_strGameID.size(), 0);
 	pshaders = PCache::Create(
 		gameid,
 		PIXELSHADERGEN_UID_VERSION * VERTEXSHADERGEN_UID_VERSION * GEOMETRYSHADERGEN_UID_VERSION,
 		"Ishiiruka.ps.OGL",
-		StringFromFormat("%s.ps.OGL", SConfig::GetInstance().m_strUniqueID.c_str())
+		StringFromFormat("%s.ps.OGL", SConfig::GetInstance().m_strGameID.c_str())
 	);
 
 	// Read our shader cache, only if supported
@@ -473,7 +477,7 @@ void ProgramShaderCache::Init()
 				File::CreateDir(File::GetUserPath(D_SHADERCACHE_IDX));
 
 			std::string cache_filename = StringFromFormat("%sIOGL-%s-shaders.cache", File::GetUserPath(D_SHADERCACHE_IDX).c_str(),
-				SConfig::GetInstance().m_strUniqueID.c_str());
+				SConfig::GetInstance().m_strGameID.c_str());
 
 			ProgramShaderCacheInserter inserter;
 			g_program_disk_cache.OpenAndRead(cache_filename, inserter);
@@ -496,10 +500,10 @@ void ProgramShaderCache::Init()
 			item.puid.CalculateUIDHash();
 			const pixel_shader_uid_data& uid_data = item.puid.GetUidData();
 			shader_count++;
-			Host_UpdateTitle(StringFromFormat("Compiling Shaders %zu %% (%zu/%zu)", (shader_count * 100) / total, shader_count, total));
 			if ((!uid_data.stereo || g_ActiveConfig.backend_info.bSupportsGeometryShaders)
-				&&(!uid_data.bounding_box || g_ActiveConfig.backend_info.bSupportsBBox))
+				&& (!uid_data.bounding_box || g_ActiveConfig.backend_info.bSupportsBBox))
 			{
+				Host_UpdateTitle(StringFromFormat("Compiling Shaders %zu %% (%zu/%zu)", (shader_count * 100) / total, shader_count, total));
 				CompileShader(item);
 			}
 		},
@@ -553,10 +557,7 @@ void ProgramShaderCache::Shutdown()
 		g_program_disk_cache.Sync();
 		g_program_disk_cache.Close();
 	}
-
-	s_v_buffer.reset();
-	s_g_buffer.reset();
-	s_p_buffer.reset();
+	s_buffer.reset();
 }
 
 void ProgramShaderCache::CreateHeader()
@@ -609,8 +610,8 @@ void ProgramShaderCache::CreateHeader()
 		"%s\n" // early-z
 		"%s\n" // 420pack
 		"%s\n" // msaa
-		"%s\n" // sample shading
-		"%s\n" // Sampler binding
+		"%s\n" // Input/output/sampler binding
+		"%s\n" // Varying location
 		"%s\n" // storage buffer
 		"%s\n" // shader5
 		"%s\n" // SSAA
@@ -621,6 +622,7 @@ void ProgramShaderCache::CreateHeader()
 		"%s\n" // ES dual source blend
 
 		// Precision defines for GLSL ES
+		"%s\n"
 		"%s\n"
 		"%s\n"
 		"%s\n"
@@ -661,7 +663,23 @@ void ProgramShaderCache::CreateHeader()
 		, (g_ActiveConfig.backend_info.bSupportsBindingLayout && v < GLSLES_310) ? "#extension GL_ARB_shading_language_420pack : enable" : ""
 		, (g_ogl_config.bSupportsMSAA && v < GLSL_150) ? "#extension GL_ARB_texture_multisample : enable" : ""
 		, (v < GLSLES_300 && g_ActiveConfig.backend_info.bSupportsSSAA) ? "#extension GL_ARB_sample_shading : enable" : ""
-		, g_ActiveConfig.backend_info.bSupportsBindingLayout ? "#define SAMPLER_BINDING(x) layout(binding = x)" : "#define SAMPLER_BINDING(x)"
+		// Attribute and fragment output bindings are still done via glBindAttribLocation and
+		// glBindFragDataLocation. In the future this could be moved to the layout qualifier
+		// in GLSL, but requires verification of GL_ARB_explicit_attrib_location.
+		, g_ActiveConfig.backend_info.bSupportsBindingLayout ?
+		"#define ATTRIBUTE_LOCATION(x)\n"
+		"#define FRAGMENT_OUTPUT_LOCATION(x)\n"
+		"#define FRAGMENT_OUTPUT_LOCATION_INDEXED(x, y)\n"
+		"#define UBO_BINDING(packing, x) layout(packing, binding = x)\n"
+		"#define SAMPLER_BINDING(x) layout(binding = x)\n"
+		"#define SSBO_BINDING(x) layout(binding = x)\n" :
+	"#define ATTRIBUTE_LOCATION(x)\n"
+		"#define FRAGMENT_OUTPUT_LOCATION(x)\n"
+		"#define FRAGMENT_OUTPUT_LOCATION_INDEXED(x, y)\n"
+		"#define UBO_BINDING(packing, x) layout(packing)\n"
+		"#define SAMPLER_BINDING(x)\n"
+		// Input/output blocks are matched by name during program linking
+		, "#define VARYING_LOCATION(x)\n"
 		, !is_glsles && g_ActiveConfig.backend_info.bSupportsBBox ? "#extension GL_ARB_shader_storage_buffer_object : enable" : ""
 		, !is_glsles && g_ActiveConfig.backend_info.bSupportsGSInstancing ? "#extension GL_ARB_gpu_shader5 : enable" : ""
 		, SupportedESPointSize.c_str()
@@ -675,7 +693,7 @@ void ProgramShaderCache::CreateHeader()
 		, is_glsles ? "precision highp sampler2DArray;" : ""
 		, (is_glsles && g_ActiveConfig.backend_info.bSupportsPaletteConversion) ? "precision highp usamplerBuffer;" : ""
 		, v > GLSLES_300 ? "precision highp sampler2DMS;" : ""
-	);
+		);
 }
 
 u32 ProgramShaderCache::GetUniformBufferAlignment()

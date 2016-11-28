@@ -26,7 +26,6 @@ enum TextureCacheParams
 	TEXTURE_KILL_MULTIPLIER = 2,
 	TEXTURE_KILL_THRESHOLD = 120,
 	TEXTURE_POOL_KILL_THRESHOLD = 3,
-	HIRES_POOL_KILL_THRESHOLD = 600,
 	TEXTURE_POOL_MEMORY_LIMIT = 64 * 1024 * 1024
 };
 
@@ -184,7 +183,7 @@ public:
 
 		virtual ~TCacheEntryBase();
 		virtual uintptr_t GetInternalObject() = 0;
-		virtual void Bind(u32 stage, u32 last_texture) = 0;
+		virtual void Bind(u32 stage) = 0;
 		virtual bool Save(const std::string& filename, u32 level) = 0;
 
 		virtual void CopyRectangleFromTexture(
@@ -200,13 +199,13 @@ public:
 		virtual void LoadFromTmem(const u8* ar_src, const u8* gb_src, u32 width, u32 height,
 			u32 expanded_width, u32 expanded_Height, u32 level) = 0;
 		virtual void FromRenderTarget(u8* dst, PEControl::PixelFormat srcFormat, const EFBRectangle& srcRect,
-			bool scaleByHalf, unsigned int cbufid, const float *colmat) = 0;
+			bool scaleByHalf, unsigned int cbufid, const float *colmat, u32 width, u32 height) = 0;
 		bool OverlapsMemoryRange(u32 range_address, u32 range_size) const;
 		virtual bool SupportsMaterialMap() const = 0;
 
 		TextureCacheBase::TCacheEntryBase* ApplyPalette(u32 tlutaddr, u32 tlutfmt, u32 palette_size);
 
-		bool IsEfbCopy()
+		bool IsEfbCopy() const
 		{
 			return is_efb_copy;
 		}
@@ -223,7 +222,6 @@ public:
 	// Removes textures which aren't used for more than TEXTURE_KILL_THRESHOLD frames,
 	// frameCount is the current frame number.
 	static void Cleanup(int frameCount);
-
 	static void Invalidate();
 
 	virtual PC_TexFormat GetNativeTextureFormat(const s32 texformat,
@@ -234,20 +232,21 @@ public:
 		PEControl::PixelFormat srcFormat, const EFBRectangle& srcRect,
 		bool isIntensity, bool scaleByHalf) = 0;
 
-	virtual void CompileShaders() = 0; // currently only implemented by OGL
+	virtual bool CompileShaders() = 0; // currently only implemented by OGL
 	virtual void DeleteShaders() = 0; // currently only implemented by OGL
 
 	virtual void LoadLut(u32 lutFmt, void* addr, u32 size) = 0;
 
 	static TCacheEntryBase* Load(const u32 stage);
 	static void UnbindTextures();
-	static void BindTextures();
+	virtual void BindTextures();
 	static void CopyRenderTargetToTexture(u32 dstAddr, u32 dstFormat, u32 dstStride,
 		PEControl::PixelFormat srcFormat, const EFBRectangle& srcRect, bool isIntensity, bool scaleByHalf);
 
 protected:
 	alignas(16) static u8 *temp;
 	static size_t temp_size;
+	static TCacheEntryBase* bound_textures[8];
 	TextureCacheBase();
 private:
 	typedef std::multimap<u64, TCacheEntryBase*> TexCache;
@@ -257,8 +256,8 @@ private:
 	static void CheckTempSize(size_t required_size);
 	static TCacheEntryBase* DoPartialTextureUpdates(TexCache::iterator iter, u32 tlutaddr, u32 tlutfmt, u32 palette_size);
 	static void DumpTexture(TCacheEntryBase* entry, std::string basename, u32 level);
-	static void InvalidateHiresCache();
 	static TCacheEntryBase* AllocateTexture(const TCacheEntryConfig& config);
+	static TexPool::iterator FindMatchingTextureFromPool(const TCacheEntryConfig& config);
 	static TexCache::iterator GetTexCacheIter(TCacheEntryBase* entry);
 	static TexCache::iterator InvalidateTexture(TexCache::iterator t_iter);
 	static TCacheEntryBase* ReturnEntry(u32 stage, TCacheEntryBase* entry);
@@ -269,8 +268,7 @@ private:
 	static TexCache textures_by_hash;
 	static TexPool texture_pool;
 	static size_t texture_pool_memory_usage;
-	static HiresTexPool hires_texture_pool;
-	static TCacheEntryBase* bound_textures[8];
+	
 	static u32 s_last_texture;
 
 	// Backup configuration values

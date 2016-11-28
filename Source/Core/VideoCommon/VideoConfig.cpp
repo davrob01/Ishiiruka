@@ -7,6 +7,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
 #include "Common/IniFile.h"
+#include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
@@ -30,10 +31,6 @@ VideoConfig::VideoConfig()
 {
 	bRunning = false;
 
-	// Exclusive fullscreen flags
-	bFullscreen = false;
-	bExclusiveMode = false;
-
 	// Needed for the first frame, I think
 	fAspectRatioHackW = 1;
 	fAspectRatioHackH = 1;
@@ -54,6 +51,10 @@ VideoConfig::VideoConfig()
 	bTexDeposterize = false;
 	iTexScalingType = 0;
 	iTexScalingFactor = 2;
+	backend_info.bSupportsMultithreading = false;
+
+	bEnableValidationLayer = false;
+	bBackendMultithreading = true;
 }
 
 void VideoConfig::Load(const std::string& ini_file)
@@ -84,9 +85,7 @@ void VideoConfig::Load(const std::string& ini_file)
 	settings->Get("HiresTextures", &bHiresTextures, 0);
 	settings->Get("HiresMaterialMaps", &bHiresMaterialMaps, 0);
 	settings->Get("HiresMaterialMapsBuild", &bHiresMaterialMapsBuild, false);
-	settings->Get("ConvertHiresTextures", &bConvertHiresTextures, 0);
 	settings->Get("CacheHiresTextures", &bCacheHiresTextures, 0);
-	settings->Get("CacheHiresTexturesonGPU", &bCacheHiresTexturesGPU, 0);
 	settings->Get("DumpEFBTarget", &bDumpEFBTarget, 0);
 	settings->Get("FreeLook", &bFreeLook, 0);
 	settings->Get("CompileShaderOnStartup", &bCompileShaderOnStartup, 1);
@@ -126,6 +125,10 @@ void VideoConfig::Load(const std::string& ini_file)
 	settings->Get("SWDrawStart", &drawStart, 0);
 	settings->Get("SWDrawEnd", &drawEnd, 100000);
 
+	settings->Get("EnableValidationLayer", &bEnableValidationLayer, false);
+	settings->Get("BackendMultithreading", &bBackendMultithreading, true);
+	settings->Get("CommandBufferExecuteInterval", &iCommandBufferExecuteInterval, 100);
+
 	IniFile::Section* enhancements = iniFile.GetOrCreateSection("Enhancements");
 	enhancements->Get("ForceFiltering", &bForceFiltering, 0);
 	enhancements->Get("DisableFiltering", &bDisableTextureFiltering, 0);
@@ -144,6 +147,7 @@ void VideoConfig::Load(const std::string& ini_file)
 	enhancements->Get("TessellationMax", &iTessellationMax, 6);
 	enhancements->Get("TessellationRoundingIntensity", &iTessellationRoundingIntensity, 0);
 	enhancements->Get("TessellationDisplacementIntensity", &iTessellationDisplacementIntensity, 0);
+	enhancements->Get("ForceTrueColor", &bForceTrueColor, true);
 
 	IniFile::Section* stereoscopy = iniFile.GetOrCreateSection("Stereoscopy");
 	stereoscopy->Get("StereoMode", &iStereoMode, 0);
@@ -221,9 +225,7 @@ void VideoConfig::GameIniLoad()
 	CHECK_SETTING("Video_Settings", "HiresTextures", bHiresTextures);
 	CHECK_SETTING("Video_Settings", "HiresMaterialMaps", bHiresMaterialMaps);
 
-	CHECK_SETTING("Video_Settings", "ConvertHiresTextures", bConvertHiresTextures);
 	CHECK_SETTING("Video_Settings", "CacheHiresTextures", bCacheHiresTextures);
-	CHECK_SETTING("Video_Settings", "CacheHiresTexturesonGPU", bCacheHiresTexturesGPU);
 	CHECK_SETTING("Video_Settings", "EnablePixelLighting", bEnablePixelLighting);
 	CHECK_SETTING("Video_Settings", "ForcedLighting", bForcedLighting);
 
@@ -270,6 +272,8 @@ void VideoConfig::GameIniLoad()
 
 	CHECK_SETTING("Video_Settings", "DisableFog", bDisableFog);
 	CHECK_SETTING("Video_Settings", "EnableOpenCL", bEnableOpenCL);
+	CHECK_SETTING("Video_Settings", "BackendMultithreading", bBackendMultithreading);
+	CHECK_SETTING("Video_Settings", "CommandBufferExecuteInterval", iCommandBufferExecuteInterval);
 
 	// These are not overrides, they are per-game stereoscopy parameters, hence no warning
 	iniFile.GetIfExists("Video_Stereoscopy", "StereoConvergence", &iStereoConvergence, 20);
@@ -293,6 +297,7 @@ void VideoConfig::GameIniLoad()
 	CHECK_SETTING("Video_Enhancements", "PostProcessingTrigger", iPostProcessingTrigger);
 	CHECK_SETTING("Video_Enhancements", "PostProcessingShaders", sPostProcessingShaders);
 	CHECK_SETTING("Video_Enhancements", "ScalingShader", sScalingShader);
+	CHECK_SETTING("Video_Enhancements", "ForceTrueColor", bForceTrueColor);
 
 	CHECK_SETTING("Video_Stereoscopy", "StereoMode", iStereoMode);
 	CHECK_SETTING("Video_Stereoscopy", "StereoDepth", iStereoDepth);
@@ -389,7 +394,7 @@ void VideoConfig::VerifyValidity()
 		iTexScalingType = 10;
 	}
 	bHiresMaterialMaps = bHiresMaterialMaps && bHiresTextures && bEnablePixelLighting;
-	bLastStoryEFBToRam = bLastStoryEFBToRam && StartsWith(SConfig::GetInstance().GetUniqueID(), "SLS");
+	bLastStoryEFBToRam = bLastStoryEFBToRam && StartsWith(SConfig::GetInstance().GetGameID(), "SLS");
 }
 
 void VideoConfig::Save(const std::string& ini_file)
@@ -421,9 +426,7 @@ void VideoConfig::Save(const std::string& ini_file)
 	settings->Set("HiresMaterialMaps", bHiresMaterialMaps);
 	settings->Set("HiresMaterialMapsBuild", bHiresMaterialMapsBuild);
 	
-	settings->Set("ConvertHiresTextures", bConvertHiresTextures);
 	settings->Set("CacheHiresTextures", bCacheHiresTextures);
-	settings->Set("CacheHiresTexturesonGPU", bCacheHiresTexturesGPU);
 	settings->Set("DumpEFBTarget", bDumpEFBTarget);
 	settings->Set("FreeLook", bFreeLook);
 	settings->Set("CompileShaderOnStartup", bCompileShaderOnStartup);
@@ -463,6 +466,10 @@ void VideoConfig::Save(const std::string& ini_file)
 	settings->Set("SWDrawStart", drawStart);
 	settings->Set("SWDrawEnd", drawEnd);
 
+	settings->Set("EnableValidationLayer", bEnableValidationLayer);
+	settings->Set("BackendMultithreading", bBackendMultithreading);
+	settings->Set("CommandBufferExecuteInterval", iCommandBufferExecuteInterval);
+
 	IniFile::Section* enhancements = iniFile.GetOrCreateSection("Enhancements");
 	enhancements->Set("ForceFiltering", bForceFiltering);
 	enhancements->Set("DisableFiltering", bDisableTextureFiltering);
@@ -481,6 +488,7 @@ void VideoConfig::Save(const std::string& ini_file)
 	enhancements->Set("TessellationMax", iTessellationMax);
 	enhancements->Set("TessellationRoundingIntensity", iTessellationRoundingIntensity);
 	enhancements->Set("TessellationDisplacementIntensity", iTessellationDisplacementIntensity);
+	enhancements->Set("ForceTrueColor", bForceTrueColor);
 
 	IniFile::Section* stereoscopy = iniFile.GetOrCreateSection("Stereoscopy");
 	stereoscopy->Set("StereoMode", iStereoMode);

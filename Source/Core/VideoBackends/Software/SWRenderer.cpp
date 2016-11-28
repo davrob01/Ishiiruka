@@ -107,42 +107,16 @@ void SWRenderer::UpdateColorTexture(EfbInterface::yuv422_packed *xfb, u32 fbWidt
 }
 
 // Called on the GPU thread
-void SWRenderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, float Gamma)
+void SWRenderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, u64 ticks, float Gamma)
 {
-	if (!Fifo::WillSkipCurrentFrame())
+	if (g_ActiveConfig.bUseXFB)
 	{
-
-		if (g_ActiveConfig.bUseXFB)
-		{
-			EfbInterface::yuv422_packed* xfb = (EfbInterface::yuv422_packed*) Memory::GetPointer(xfbAddr);
-			UpdateColorTexture(xfb, fbWidth, fbHeight);
-		}
-		else
-		{
-			EfbInterface::BypassXFB(GetCurrentColorTexture(), fbWidth, fbHeight, rc, Gamma);
-		}
-
-		// Save screenshot
-		if (s_bScreenshot)
-		{
-			std::lock_guard<std::mutex> lk(s_criticalScreenshot);
-
-			if (TextureToPng(GetCurrentColorTexture(), fbWidth * 4, s_sScreenshotName, fbWidth, fbHeight, false))
-				OSD::AddMessage("Screenshot saved to " + s_sScreenshotName);
-
-			// Reset settings
-			s_sScreenshotName.clear();
-			s_bScreenshot = false;
-			s_screenshotCompleted.Set();
-		}
-
-		if (SConfig::GetInstance().m_DumpFrames)
-		{
-			static int frame_index = 0;
-			TextureToPng(GetCurrentColorTexture(), fbWidth * 4, StringFromFormat("%sframe%i_color.png",
-				File::GetUserPath(D_DUMPFRAMES_IDX).c_str(), frame_index), fbWidth, fbHeight, true);
-			frame_index++;
-		}
+		EfbInterface::yuv422_packed* xfb = (EfbInterface::yuv422_packed*) Memory::GetPointer(xfbAddr);
+		UpdateColorTexture(xfb, fbWidth, fbHeight);
+	}
+	else
+	{
+		EfbInterface::BypassXFB(GetCurrentColorTexture(), fbWidth, fbHeight, rc, Gamma);
 	}
 
 	OSD::DoCallbacks(OSD::CallbackType::OnFrame);

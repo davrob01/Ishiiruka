@@ -55,12 +55,12 @@ private:
 			u32 expanded_width, u32 expanded_Height, u32 level) override;
 
 		void FromRenderTarget(u8* dst, PEControl::PixelFormat srcFormat, const EFBRectangle& srcRect,
-			bool scaleByHalf, unsigned int cbufid, const float *colmat) override;
+			bool scaleByHalf, unsigned int cbufid, const float *colmat, u32 width, u32 height) override;
 		bool SupportsMaterialMap() const override
 		{
 			return nrm_texture != 0;
 		};
-		void Bind(u32 stage, u32 last_texture) override;
+		void Bind(u32 stage) override;
 		bool Save(const std::string& filename, u32 level) override;
 		inline uintptr_t GetInternalObject() override
 		{
@@ -77,7 +77,7 @@ private:
 		bool isIntensity, bool scaleByHalf) override;
 	bool Palettize(TCacheEntryBase* entry, const TCacheEntryBase* base_entry) override;
 	void LoadLut(u32 lutFmt, void* addr, u32 size) override;
-	void CompileShaders() override;
+	bool CompileShaders() override;
 	void DeleteShaders() override;
 	void* m_last_addr = {};
 	u32 m_last_size = {};

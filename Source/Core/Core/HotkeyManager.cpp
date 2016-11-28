@@ -10,8 +10,7 @@
 #include "Core/HotkeyManager.h"
 #include "InputCommon/GCPadStatus.h"
 
-const std::string hotkey_labels[] =
-{
+const std::string hotkey_labels[] = {
 		_trans("Open"),
 		_trans("Change Disc"),
 		_trans("Refresh List"),
@@ -33,10 +32,11 @@ const std::string hotkey_labels[] =
 		_trans("Take Screenshot"),
 		_trans("Exit"),
 
-		_trans("Connect Wiimote 1"),
-		_trans("Connect Wiimote 2"),
-		_trans("Connect Wiimote 3"),
-		_trans("Connect Wiimote 4"),
+		_trans("Press Sync Button"),
+		_trans("Connect Wii Remote 1"),
+		_trans("Connect Wii Remote 2"),
+		_trans("Connect Wii Remote 3"),
+		_trans("Connect Wii Remote 4"),
 		_trans("Connect Balance Board"),
 
 		_trans("Volume Down"),
@@ -184,12 +184,11 @@ bool IsPressed(int Id, bool held)
 	return false;
 }
 
-void Initialize(void* const hwnd)
+void Initialize()
 {
 	if (s_config.ControllersNeedToBeCreated())
 		s_config.CreateController<HotkeyManager>();
 
-	g_controller_interface.Initialize(hwnd);
 	g_controller_interface.RegisterHotplugCallback(LoadConfig);
 
 	// load the saved controller config
@@ -209,8 +208,6 @@ void LoadConfig()
 void Shutdown()
 {
 	s_config.ClearControllers();
-
-	g_controller_interface.Shutdown();
 }
 }
 

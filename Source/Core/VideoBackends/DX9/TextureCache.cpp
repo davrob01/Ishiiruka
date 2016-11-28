@@ -83,7 +83,7 @@ TextureCache::TCacheEntry::~TCacheEntry()
 	texture->Release();
 }
 
-void TextureCache::TCacheEntry::Bind(u32 stage, u32 last_texture)
+void TextureCache::TCacheEntry::Bind(u32 stage)
 {
 	D3D::SetTexture(stage, texture);
 }
@@ -220,7 +220,7 @@ void TextureCache::TCacheEntry::LoadFromTmem(const u8* ar_src, const u8* gb_src,
 }
 
 void TextureCache::TCacheEntry::FromRenderTarget(u8* dst, PEControl::PixelFormat srcFormat, const EFBRectangle& srcRect,
-	bool scaleByHalf, unsigned int cbufid, const float *colmat)
+	bool scaleByHalf, unsigned int cbufid, const float *colmat, u32 width, u32 height)
 {
 	g_renderer->ResetAPIState(); // reset any game specific settings
 
@@ -234,24 +234,24 @@ void TextureCache::TCacheEntry::FromRenderTarget(u8* dst, PEControl::PixelFormat
 	D3D::dev->SetRenderTarget(0, Rendersurf);
 
 	D3DVIEWPORT9 vp;
-
+	TargetRectangle targetSource = g_renderer->ConvertEFBRectangle(srcRect);
 	// Stretch picture with increased internal resolution
 	vp.X = 0;
 	vp.Y = 0;
-	vp.Width = config.width;
-	vp.Height = config.height;
+	vp.Width = width;
+	vp.Height = height;
 	vp.MinZ = 0.0f;
 	vp.MaxZ = 1.0f;
 	D3D::dev->SetViewport(&vp);
 	RECT destrect;
-	destrect.bottom = config.height;
+	destrect.bottom = vp.Height;
 	destrect.left = 0;
-	destrect.right = config.width;
+	destrect.right = vp.Width;
 	destrect.top = 0;
 
 	PixelShaderManager::SetColorMatrix(colmat); // set transformation
 	D3D::dev->SetPixelShaderConstantF(C_COLORMATRIX, PixelShaderManager::GetBuffer(), 7);
-	TargetRectangle targetSource = g_renderer->ConvertEFBRectangle(srcRect);
+	
 	RECT sourcerect;
 	sourcerect.bottom = targetSource.bottom;
 	sourcerect.left = targetSource.left;

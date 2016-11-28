@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <array>
 #include <string>
 #include "VideoCommon/RenderBase.h"
 
@@ -81,10 +82,8 @@ public:
 	void SetViewport() override;
 
 	// TODO: Implement and use these
-	void ApplyState(bool bUseDstAlpha) override
-	{}
-	void RestoreState() override
-	{}
+	void ApplyState(bool bUseDstAlpha) override;
+	void RestoreState() override {}
 
 	void RenderText(const std::string& text, int left, int top, u32 color) override;
 
@@ -99,7 +98,7 @@ public:
 
 	TargetRectangle ConvertEFBRectangle(const EFBRectangle& rc) override;
 
-	void SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc,
+	void SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, u64 ticks,
 		float Gamma) override;
 
 	void ClearScreen(const EFBRectangle& rc, bool colorEnable, bool alphaEnable, bool zEnable,
@@ -107,12 +106,50 @@ public:
 
 	void ReinterpretPixelData(unsigned int convtype) override;
 
-	bool SaveScreenshot(const std::string& filename, const TargetRectangle& rc) override;
+	u32 GetMaxTextureSize() override;
 
-	int GetMaxTextureSize() override;
+	void ChangeSurface(void* new_surface_handle) override;
 
 private:
+	struct ViewPort {
+		float       X;
+		float       Y;
+		float       Width;
+		float       Height;
+		float       NearZ;
+		float       FarZ;
+	};
+	bool m_bColorMaskChanged;
+	bool m_bBlendModeChanged;
+	bool m_bBlendModeForce;
+	bool m_bScissorRectChanged;
+	bool m_bViewPortChanged;
+	TargetRectangle m_ScissorRect;
+	ViewPort m_viewport;
+	bool m_bGenerationModeChanged;
+	bool m_bDepthModeChanged;
+	bool m_bLogicOpModeChanged;
+	bool m_bViewPortChangedRequested;
+
+	void _SetColorMask();
+	void _SetBlendMode(bool forceUpdate);
+	void _SetScissorRect();
+	void _SetGenerationMode();
+	void _SetDepthMode();
+	void _SetLogicOpMode();
+	void _SetViewport();
 	void UpdateEFBCache(EFBAccessType type, u32 cacheRectIdx, const EFBRectangle& efbPixelRc, const TargetRectangle& targetPixelRc, const void* data);
-	void BlitScreen(TargetRectangle dst_rect, TargetRectangle src_rect, TargetSize src_size, GLuint src_texture, GLuint src_depth_texture, float gamma);
+	void BlitScreen(const TargetRectangle& dst_rect, const TargetRectangle& src_rect, const  TargetSize& src_size, GLuint src_texture, GLuint src_depth_texture, float gamma);
+
+	void FlushFrameDump();
+	void DumpFrame(const TargetRectangle& flipped_trc, u64 ticks);
+
+	// avi dumping state to delay one frame
+	std::array<u32, 2> m_frame_dumping_pbo = {};
+	std::array<bool, 2> m_frame_pbo_is_mapped = {};
+	std::array<int, 2> m_last_frame_width = {};
+	std::array<int, 2> m_last_frame_height = {};
+	bool m_last_frame_exported = false;
+	AVIDump::Frame m_last_frame_state;
 };
 }

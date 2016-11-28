@@ -290,16 +290,16 @@ void PixelShaderCache::Init()
 	SETSTAT(stats.numPixelShadersCreated, 0);
 	SETSTAT(stats.numPixelShadersAlive, 0);
 
-	pKey_t gameid = (pKey_t)GetMurmurHash3(reinterpret_cast<const u8*>(SConfig::GetInstance().m_strUniqueID.data()), (u32)SConfig::GetInstance().m_strUniqueID.size(), 0);
+	pKey_t gameid = (pKey_t)GetMurmurHash3(reinterpret_cast<const u8*>(SConfig::GetInstance().m_strGameID.data()), (u32)SConfig::GetInstance().m_strGameID.size(), 0);
 	s_pshaders = ObjectUsageProfiler<PixelShaderUid, pKey_t, PSCacheEntry, PixelShaderUid::ShaderUidHasher>::Create(
 		gameid,
 		PIXELSHADERGEN_UID_VERSION,
 		"Ishiiruka.ps.dx9",
-		StringFromFormat("%s.ps.dx9", SConfig::GetInstance().m_strUniqueID.c_str())
+		StringFromFormat("%s.ps.dx9", SConfig::GetInstance().m_strGameID.c_str())
 	);
 
 	std::string cache_filename = StringFromFormat("%sIDX9-%s-ps.cache", File::GetUserPath(D_SHADERCACHE_IDX).c_str(),
-		SConfig::GetInstance().m_strUniqueID.c_str());
+		SConfig::GetInstance().m_strGameID.c_str());
 
 	PixelShaderCacheInserter inserter;
 	g_ps_disk_cache.OpenAndRead(cache_filename, inserter);
@@ -334,9 +334,9 @@ void PixelShaderCache::Init()
 				CompilePShader(newitem, PIXEL_SHADER_RENDER_MODE::PSRM_DEFAULT, true);
 			}
 			shader_count++;
-			Host_UpdateTitle(StringFromFormat("Compiling Pixel Shaders %i %% (%i/%i)", (shader_count * 100) / total, shader_count, total));
-			if ((shader_count & 31) == 0)
+			if ((shader_count & 7) == 0)
 			{
+				Host_UpdateTitle(StringFromFormat("Compiling Pixel Shaders %i %% (%i/%i)", (shader_count * 100) / total, shader_count, total));
 				s_compiler->WaitForFinish();
 			}
 		},
@@ -354,6 +354,8 @@ void PixelShaderCache::Clear()
 	if (s_pshaders)
 	{
 		s_pixel_shaders_lock.lock();
+		if (s_compiler)
+			s_compiler->WaitForFinish();
 		s_pshaders->Persist();
 		s_pshaders->Clear([](auto& item)
 		{

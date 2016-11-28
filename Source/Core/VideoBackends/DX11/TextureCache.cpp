@@ -38,7 +38,7 @@ TextureCache::TCacheEntry::~TCacheEntry()
 	}
 }
 
-void TextureCache::TCacheEntry::Bind(u32 stage, u32 last_texture)
+void TextureCache::TCacheEntry::Bind(u32 stage)
 {
 	D3D::stateman->SetTexture(stage, texture->GetSRV());
 	if (nrm_texture && g_ActiveConfig.HiresMaterialMapsEnabled())
@@ -390,7 +390,7 @@ TextureCache::TCacheEntryBase* TextureCache::CreateTexture(const TCacheEntryConf
 }
 
 void TextureCache::TCacheEntry::FromRenderTarget(u8* dst, PEControl::PixelFormat srcFormat, const EFBRectangle& srcRect,
-	bool scaleByHalf, unsigned int cbufid, const float *colmat)
+	bool scaleByHalf, unsigned int cbufid, const float *colmat, u32 width, u32 height)
 {
 	// When copying at half size, in multisampled mode, resolve the color/depth buffer first.
 	// This is because multisampled texture reads go through Load, not Sample, and the linear
@@ -411,10 +411,10 @@ void TextureCache::TCacheEntry::FromRenderTarget(u8* dst, PEControl::PixelFormat
 			FramebufferManager::GetEFBDepthTexture()->GetSRV() :
 			FramebufferManager::GetEFBColorTexture()->GetSRV();
 	}
-
+	const TargetRectangle targetSource = g_renderer->ConvertEFBRectangle(srcRect);
 	g_renderer->ResetAPIState();
 	// stretch picture with increased internal resolution
-	const D3D11_VIEWPORT vp = CD3D11_VIEWPORT(0.f, 0.f, (float)config.width, (float)config.height);
+	const D3D11_VIEWPORT vp = CD3D11_VIEWPORT(0.f, 0.f, (float)width, (float)height);
 	D3D::context->RSSetViewports(1, &vp);
 
 	// set transformation
@@ -429,7 +429,7 @@ void TextureCache::TCacheEntry::FromRenderTarget(u8* dst, PEControl::PixelFormat
 	}
 	D3D::stateman->SetPixelConstants(efbcopycbuf[cbufid].get());
 
-	const TargetRectangle targetSource = g_renderer->ConvertEFBRectangle(srcRect);
+	
 	// TODO: try targetSource.asRECT();
 	const D3D11_RECT sourcerect = CD3D11_RECT(targetSource.left, targetSource.top, targetSource.right, targetSource.bottom);
 

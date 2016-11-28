@@ -28,7 +28,8 @@ public:
 	void SetSamplerState(int stage, int texindex, bool custom_tex) override;
 	void SetInterlacingMode() override;
 	void SetViewport() override;
-
+	void SetFullscreen(bool enable_fullscreen) override;
+	bool IsFullscreen() const override;
 	// TODO: Fix confusing names (see ResetAPIState and RestoreAPIState)
 	void ApplyState(bool bUseDstAlpha) override;
 	void RestoreState() override;
@@ -48,17 +49,14 @@ public:
 
 	TargetRectangle ConvertEFBRectangle(const EFBRectangle& rc) override;
 
-	void SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, float Gamma = 1.0f) override;
+	void SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, u64 ticks, float Gamma = 1.0f) override;
 
 	void ClearScreen(const EFBRectangle& rc, bool colorEnable, bool alphaEnable, bool zEnable, u32 color, u32 z) override;
 
 	void ReinterpretPixelData(unsigned int convtype) override;
-
-	bool SaveScreenshot(const std::string &filename, const TargetRectangle &rc) override;
-
 	static bool CheckForResize();
 
-	int GetMaxTextureSize() override;
+	u32 GetMaxTextureSize() override;
 };
 
 }

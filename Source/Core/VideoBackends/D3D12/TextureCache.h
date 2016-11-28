@@ -18,6 +18,7 @@ public:
 	TextureCache();
 	~TextureCache();
 	static D3D12_GPU_DESCRIPTOR_HANDLE GetTextureGroupHandle();
+	virtual void BindTextures();
 private:
 	struct TCacheEntry : TCacheEntryBase
 	{
@@ -42,12 +43,12 @@ private:
 			u32 expanded_width, u32 expanded_Height, u32 level) override;
 
 		void FromRenderTarget(u8* dst, PEControl::PixelFormat src_format, const EFBRectangle& src_rect,
-			bool scale_by_half, u32 cbuf_id, const float* colmat) override;
+			bool scale_by_half, u32 cbuf_id, const float* colmat, u32 width, u32 height) override;
 		bool SupportsMaterialMap() const override
 		{
 			return m_nrm_texture != nullptr;
 		};
-		void Bind(u32 stage, u32 last_Texture) override;
+		void Bind(u32 stage) override;
 		bool Save(const std::string& filename, u32 level) override;
 		inline uintptr_t GetInternalObject() override
 		{
@@ -63,8 +64,10 @@ private:
 		PEControl::PixelFormat src_format, const EFBRectangle& src_rect,
 		bool is_intensity, bool scale_by_half) override;
 	void LoadLut(u32 lutFmt, void* addr, u32 size) override;
-	void CompileShaders() override
-	{}
+	bool CompileShaders() override
+	{
+		return true;
+	}
 	void DeleteShaders() override
 	{}
 

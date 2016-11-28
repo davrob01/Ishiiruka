@@ -77,8 +77,10 @@ public:
 	{
 		return PC_TexFormat::PC_TEX_FMT_RGBA32;
 	};
-	void CompileShaders() override
-	{};
+	bool CompileShaders() override
+	{
+		return true;
+	};
 	void DeleteShaders() override
 	{};
 	bool Palettize(TCacheEntryBase* entry, const TCacheEntryBase* base_entry) override
@@ -119,7 +121,7 @@ private:
 		}
 
 		void FromRenderTarget(u8* dst, PEControl::PixelFormat srcFormat, const EFBRectangle& srcRect,
-			bool scaleByHalf, unsigned int cbufid, const float *colmat) override
+			bool scaleByHalf, unsigned int cbufid, const float *colmat, u32 width, u32 height) override
 		{
 			EfbCopy::CopyEfb();
 		}
@@ -130,7 +132,7 @@ private:
 			const MathUtil::Rectangle<int>& dstrect) override
 		{}
 
-		void Bind(u32 stage, u32 last_texture) override
+		void Bind(u32 stage) override
 		{}
 
 		bool Save(const std::string& filename, u32 level) override

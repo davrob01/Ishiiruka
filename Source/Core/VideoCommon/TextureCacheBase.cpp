@@ -38,7 +38,6 @@ TextureCacheBase::TexCache TextureCacheBase::textures_by_address;
 TextureCacheBase::TexCache TextureCacheBase::textures_by_hash;
 TextureCacheBase::TexPool  TextureCacheBase::texture_pool;
 // Pool to save hires textures to avoid unnesessary reloads
-TextureCacheBase::HiresTexPool TextureCacheBase::hires_texture_pool;
 TextureCacheBase::TCacheEntryBase* TextureCacheBase::bound_textures[8];
 u32 TextureCacheBase::s_last_texture;
 
@@ -88,22 +87,11 @@ void TextureCacheBase::Invalidate()
 	textures_by_hash.clear();
 }
 
-void TextureCacheBase::InvalidateHiresCache()
-{
-	for (auto& tex : hires_texture_pool)
-	{
-		texture_pool_memory_usage -= tex.second->native_size_in_bytes;
-		delete tex.second;
-	}
-	hires_texture_pool.clear();
-}
-
 TextureCacheBase::~TextureCacheBase()
 {
 	HiresTexture::Shutdown();
 	UnbindTextures();
 	Invalidate();
-	InvalidateHiresCache();
 	for (auto& rt : texture_pool)
 	{
 		delete rt.second;
@@ -133,15 +121,10 @@ void TextureCacheBase::OnConfigChanged(VideoConfig& config)
 			g_texture_cache->Invalidate();
 
 			TexDecoder_SetTexFmtOverlayOptions(g_ActiveConfig.bTexFmtOverlayEnable, g_ActiveConfig.bTexFmtOverlayCenter);
-
 			if (config.bHiresTextures != backup_config.s_hires_textures ||
 				config.bCacheHiresTextures != backup_config.s_cache_hires_textures)
 			{
 				HiresTexture::Update();
-				if (!config.bHiresTextures)
-				{
-					InvalidateHiresCache();
-				}
 			}
 		}
 
@@ -149,7 +132,8 @@ void TextureCacheBase::OnConfigChanged(VideoConfig& config)
 			config.bStereoEFBMonoDepth != backup_config.s_efb_mono_depth)
 		{
 			g_texture_cache->DeleteShaders();
-			g_texture_cache->CompileShaders();
+			if (!g_texture_cache->CompileShaders())
+				PanicAlert("Failed to recompile one or more texture conversion shaders.");
 		}
 	}
 
@@ -224,29 +208,6 @@ void TextureCacheBase::Cleanup(s32 _frameCount)
 		else
 		{
 			++iter2;
-		}
-	}
-	if (g_ActiveConfig.bHiresTextures && texture_pool_memory_usage > TEXTURE_POOL_MEMORY_LIMIT)
-	{
-		// We are using to much memory so we will have to clean hires textures if they are not used
-		HiresTexPool::iterator iter_hrt = hires_texture_pool.begin();
-		HiresTexPool::iterator hrtend = hires_texture_pool.end();
-		while (iter_hrt != hrtend)
-		{
-			if (iter_hrt->second->frameCount == FRAMECOUNT_INVALID)
-			{
-				iter_hrt->second->frameCount = _frameCount;
-			}
-			if (_frameCount > HIRES_POOL_KILL_THRESHOLD + iter_hrt->second->frameCount)
-			{
-				texture_pool_memory_usage -= iter_hrt->second->native_size_in_bytes;
-				delete iter_hrt->second;
-				iter_hrt = hires_texture_pool.erase(iter_hrt);
-			}
-			else
-			{
-				++iter_hrt;
-			}
 		}
 	}
 }
@@ -479,7 +440,7 @@ TextureCacheBase::TCacheEntryBase* TextureCacheBase::DoPartialTextureUpdates(Tex
 void TextureCacheBase::DumpTexture(TCacheEntryBase* entry, std::string basename, u32 level)
 {
 	std::string szDir = File::GetUserPath(D_DUMPTEXTURES_IDX) +
-		SConfig::GetInstance().m_strUniqueID;
+		SConfig::GetInstance().m_strGameID;
 
 	// make sure that the directory exists
 	if (!File::Exists(szDir) || !File::IsDirectory(szDir))
@@ -509,7 +470,7 @@ void TextureCacheBase::BindTextures()
 	for (u32 i = 0; i <= s_last_texture; ++i)
 	{
 		if (bound_textures[i])
-			bound_textures[i]->Bind(i, s_last_texture);
+			bound_textures[i]->Bind(i);
 	}
 }
 void TextureCacheBase::UnbindTextures()
@@ -750,15 +711,6 @@ TextureCacheBase::TCacheEntryBase* TextureCacheBase::Load(const u32 stage)
 	}
 	if (g_ActiveConfig.bHiresTextures)
 	{
-		if (g_ActiveConfig.bCacheHiresTexturesGPU)
-		{
-			HiresTexPool::iterator hriter = hires_texture_pool.find(basename);
-			if (hriter != hires_texture_pool.end())
-			{
-				textures_by_address.emplace(address, hriter->second);
-				return ReturnEntry(stage, hriter->second);
-			}
-		}
 		hires_tex = HiresTexture::Search(
 			basename,
 			[](size_t required_size)
@@ -1207,13 +1159,28 @@ void TextureCacheBase::CopyRenderTargetToTexture(u32 dstAddr, u32 dstFormat, u32
 		return;
 	}
 
-	const u32 tex_w = scaleByHalf ? srcRect.GetWidth() / 2 : srcRect.GetWidth();
-	const u32 tex_h = scaleByHalf ? srcRect.GetHeight() / 2 : srcRect.GetHeight();
+	EFBRectangle clampedRect;
+	clampedRect.left = std::min(srcRect.left, (int)EFB_WIDTH);
+	clampedRect.right = std::min(srcRect.right, (int)EFB_WIDTH);
+	clampedRect.top = std::min(srcRect.top, (int)EFB_HEIGHT);
+	clampedRect.bottom = std::min(srcRect.bottom, (int)EFB_HEIGHT);
 
-	u32 scaled_tex_w = g_ActiveConfig.bCopyEFBScaled ? Renderer::EFBToScaledX(tex_w) : tex_w;
-	u32 scaled_tex_h = g_ActiveConfig.bCopyEFBScaled ? Renderer::EFBToScaledY(tex_h) : tex_h;
+	const u32 tex_w = srcRect.GetWidth() / (scaleByHalf ? 2 : 1);
+	const u32 tex_h = srcRect.GetHeight() / (scaleByHalf ? 2 : 1);
 
-	// TODO: Implement EFB to Multitexture
+	u32 c_tex_w = clampedRect.GetWidth() / (scaleByHalf ? 2 : 1);
+	u32 c_tex_h = clampedRect.GetHeight() / (scaleByHalf ? 2 : 1);
+
+	u32 scaled_tex_w = tex_w;
+	u32 scaled_tex_h = tex_h;
+
+	if (g_ActiveConfig.bCopyEFBScaled)
+	{
+		scaled_tex_w = Renderer::EFBToScaledX(tex_w);
+		scaled_tex_h = Renderer::EFBToScaledY(tex_h);
+		c_tex_w = Renderer::EFBToScaledX(c_tex_w);
+		c_tex_h = Renderer::EFBToScaledY(c_tex_h);
+	}
 
 	// remove all texture cache entries at dstAddr
 	{
@@ -1242,8 +1209,8 @@ void TextureCacheBase::CopyRenderTargetToTexture(u32 dstAddr, u32 dstFormat, u32
 	const u32 bytes_per_block = baseFormat == GX_TF_RGBA8 ? 64 : 32;
 
 	u32 bytes_per_row = num_blocks_x * bytes_per_block;
-
-	bool copy_to_ram = !g_ActiveConfig.bSkipEFBCopyToRam;
+	// temporal fix for hangs when trying to copy larger buffers that the actual efb size
+	bool copy_to_ram = !g_ActiveConfig.bSkipEFBCopyToRam && srcRect.GetWidth() <= EFB_WIDTH && srcRect.GetHeight() <= EFB_HEIGHT;
 	if (g_ActiveConfig.bLastStoryEFBToRam)
 	{
 		// mimimi085181: Ugly speedhack for the Last Story 
@@ -1257,7 +1224,7 @@ void TextureCacheBase::CopyRenderTargetToTexture(u32 dstAddr, u32 dstFormat, u32
 	{
 		if (srcFormat != PEControl::Z24 && !isIntensity && dstFormat >= 4 && dstFormat <= 6)
 		{
-			const TargetRectangle targetSource = g_renderer->ConvertEFBRectangle(srcRect);
+			const TargetRectangle targetSource = g_renderer->ConvertEFBRectangle(clampedRect);
 			g_renderer->GetPostProcessor()->OnEFBCopy(&targetSource);
 		}
 	}
@@ -1350,7 +1317,7 @@ void TextureCacheBase::CopyRenderTargetToTexture(u32 dstAddr, u32 dstFormat, u32
 			entry->SetEfbCopy(dstStride);
 			entry->is_custom_tex = false;
 
-			entry->FromRenderTarget(dst, srcFormat, srcRect, scaleByHalf, cbufid, colmat);
+			entry->FromRenderTarget(dst, srcFormat, clampedRect, scaleByHalf, cbufid, colmat, c_tex_w, c_tex_h);
 
 			u64 hash = entry->CalculateHash();
 			entry->SetHashes(hash, hash);
@@ -1369,7 +1336,7 @@ void TextureCacheBase::CopyRenderTargetToTexture(u32 dstAddr, u32 dstFormat, u32
 
 TextureCacheBase::TCacheEntryBase* TextureCacheBase::AllocateTexture(const TCacheEntryConfig& config)
 {
-	TexPool::iterator iter = texture_pool.find(config);
+	TexPool::iterator iter = FindMatchingTextureFromPool(config);
 	TextureCacheBase::TCacheEntryBase* entry;
 	if (iter != texture_pool.end())
 	{
@@ -1384,6 +1351,19 @@ TextureCacheBase::TCacheEntryBase* TextureCacheBase::AllocateTexture(const TCach
 	}
 	entry->textures_by_hash_iter = textures_by_hash.end();
 	return entry;
+}
+
+TextureCacheBase::TexPool::iterator
+TextureCacheBase::FindMatchingTextureFromPool(const TCacheEntryConfig& config)
+{
+	// Find a texture from the pool that does not have a frameCount of FRAMECOUNT_INVALID.
+	// This prevents a texture from being used twice in a single frame with different data,
+	// which potentially means that a driver has to maintain two copies of the texture anyway.
+	auto range = texture_pool.equal_range(config);
+	auto matching_iter = std::find_if(range.first, range.second, [](const auto& iter) {
+		return iter.second->frameCount != FRAMECOUNT_INVALID;
+	});
+	return matching_iter != range.second ? matching_iter : texture_pool.end();
 }
 
 TextureCacheBase::TexCache::iterator TextureCacheBase::GetTexCacheIter(TextureCacheBase::TCacheEntryBase* entry)
@@ -1418,14 +1398,7 @@ TextureCacheBase::TexCache::iterator TextureCacheBase::InvalidateTexture(TexCach
 
 	entry->frameCount = FRAMECOUNT_INVALID;
 
-	if (entry->is_custom_tex && g_ActiveConfig.bCacheHiresTexturesGPU)
-	{
-		hires_texture_pool[entry->basename] = entry;
-	}
-	else
-	{
-		texture_pool.emplace(entry->config, entry);
-	}
+	texture_pool.emplace(entry->config, entry);
 	return textures_by_address.erase(iter);
 }
 

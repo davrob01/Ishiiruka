@@ -9,12 +9,22 @@
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
+#include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
 #include "Core/ConfigManager.h"
 #include "Core/PowerPC/PPCAnalyst.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/PowerPC/SignatureDB.h"
+
+static std::string GetStrippedFunctionName(const std::string& symbol_name)
+{
+	std::string name = symbol_name.substr(0, symbol_name.find('('));
+	size_t position = name.find(' ');
+	if (position != std::string::npos)
+		name.erase(position);
+	return name;
+}
 
 PPCSymbolDB g_symbolDB;
 
@@ -45,7 +55,7 @@ Symbol* PPCSymbolDB::AddFunction(u32 startAddr)
 		u32 targetEnd = PPCAnalyst::AnalyzeFunction(startAddr, tempFunc);
 		if (targetEnd == 0)
 			return nullptr;  // found a dud :(
-		// LOG(OSHLE, "Symbol found at %08x", startAddr);
+											 // LOG(OSHLE, "Symbol found at %08x", startAddr);
 		functions[startAddr] = tempFunc;
 		tempFunc.type = Symbol::Type::Function;
 		checksumToFunction[tempFunc.hash] = &(functions[startAddr]);
@@ -62,6 +72,7 @@ void PPCSymbolDB::AddKnownSymbol(u32 startAddr, u32 size, const std::string& nam
 		// already got it, let's just update name, checksum & size to be sure.
 		Symbol* tempfunc = &iter->second;
 		tempfunc->name = name;
+		tempfunc->function_name = GetStrippedFunctionName(name);
 		tempfunc->hash = SignatureDB::ComputeCodeChecksum(startAddr, startAddr + size - 4);
 		tempfunc->type = type;
 		tempfunc->size = size;
@@ -77,6 +88,7 @@ void PPCSymbolDB::AddKnownSymbol(u32 startAddr, u32 size, const std::string& nam
 		{
 			PPCAnalyst::AnalyzeFunction(startAddr, tf, size);
 			checksumToFunction[tf.hash] = &(functions[startAddr]);
+			tf.function_name = GetStrippedFunctionName(name);
 		}
 		tf.size = size;
 		functions[startAddr] = tf;
@@ -101,7 +113,7 @@ Symbol* PPCSymbolDB::GetSymbolFromAddr(u32 addr)
 	return nullptr;
 }
 
-const std::string PPCSymbolDB::GetDescription(u32 addr)
+std::string PPCSymbolDB::GetDescription(u32 addr)
 {
 	Symbol* symbol = GetSymbolFromAddr(addr);
 	if (symbol)
@@ -147,13 +159,13 @@ void PPCSymbolDB::PrintCalls(u32 funcAddr) const
 	if (iter != functions.end())
 	{
 		const Symbol& f = iter->second;
-		INFO_LOG(OSHLE, "The function %s at %08x calls:", f.name.c_str(), f.address);
+		DEBUG_LOG(OSHLE, "The function %s at %08x calls:", f.name.c_str(), f.address);
 		for (const SCall& call : f.calls)
 		{
 			XFuncMap::const_iterator n = functions.find(call.function);
 			if (n != functions.end())
 			{
-				INFO_LOG(CONSOLE, "* %08x : %s", call.callAddress, n->second.name.c_str());
+				DEBUG_LOG(CONSOLE, "* %08x : %s", call.callAddress, n->second.name.c_str());
 			}
 		}
 	}
@@ -169,13 +181,13 @@ void PPCSymbolDB::PrintCallers(u32 funcAddr) const
 	if (iter != functions.end())
 	{
 		const Symbol& f = iter->second;
-		INFO_LOG(CONSOLE, "The function %s at %08x is called by:", f.name.c_str(), f.address);
+		DEBUG_LOG(CONSOLE, "The function %s at %08x is called by:", f.name.c_str(), f.address);
 		for (const SCall& caller : f.callers)
 		{
 			XFuncMap::const_iterator n = functions.find(caller.function);
 			if (n != functions.end())
 			{
-				INFO_LOG(CONSOLE, "* %08x : %s", caller.callAddress, n->second.name.c_str());
+				DEBUG_LOG(CONSOLE, "* %08x : %s", caller.callAddress, n->second.name.c_str());
 			}
 		}
 	}
@@ -436,7 +448,7 @@ bool PPCSymbolDB::SaveMap(const std::string& filename, bool WithCodes) const
 			++itr;
 
 			/* To make nice straight lines we fill out the name with spaces, we also cut off
-				 all names longer than 25 letters */
+			all names longer than 25 letters */
 			std::string TempSym;
 			for (u32 i = 0; i < 25; i++)
 			{

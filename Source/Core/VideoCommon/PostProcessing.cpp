@@ -32,42 +32,44 @@
 static const char s_default_shader[] = "void main() { SetOutput(ApplyGCGamma(Sample())); }\n";
 struct LangDescriptor
 {
-	wxLanguage Lang;
+	const char* Lang;
 	const char* Code;
 };
 
-#define LANGUAGE_ID_COUNT 26
+#define LANGUAGE_ID_COUNT 29
 
 static const LangDescriptor language_ids[LANGUAGE_ID_COUNT] =
 {
-	{ wxLANGUAGE_DEFAULT, ""},
+	{ "", "" },
+	{ "ms", ".MAL" },
+	{ "ca", ".CAT" },
+	{ "cs", ".CZE" },
+	{ "da", ".DAN" },
+	{ "de", ".GER" },
+	{ "en", ".ENG" },
+	{ "es", ".SPA" },
+	{ "fr", ".FRE" },
+	{ "hr", ".CRO" },
+	{ "it", ".ITA" },
+	{ "hu", ".HUN" },
+	{ "nl", ".DUT" },
+	{ "nb", ".NOR" },
+	{ "pl", ".POL" },
+	{ "pt", ".POR" },
+	{ "pt_BR", ".BRA" },
+	{ "ro", ".ROM" },
+	{ "sr", ".SER" },
+	{ "sv", ".SWE" },
+	{ "tr", ".TUR" },
 
-	{ wxLANGUAGE_CATALAN, ".CAT" },
-	{ wxLANGUAGE_CZECH, ".CZE" },
-	{ wxLANGUAGE_GERMAN, ".GER" },
-	{ wxLANGUAGE_ENGLISH, ".ENG" },
-	{ wxLANGUAGE_SPANISH, ".SPA" },
-	{ wxLANGUAGE_FRENCH, ".FRE" },
-	{ wxLANGUAGE_ITALIAN, ".ITA" },
-	{ wxLANGUAGE_HUNGARIAN, ".HUN" },
-	{ wxLANGUAGE_DUTCH, ".DUT" },
-	{ wxLANGUAGE_NORWEGIAN_BOKMAL, ".NOR" },
-	{ wxLANGUAGE_POLISH, ".POL" },
-	{ wxLANGUAGE_PORTUGUESE, ".POR" },
-	{ wxLANGUAGE_PORTUGUESE_BRAZILIAN, ".BRA" },
-	{ wxLANGUAGE_SERBIAN, ".SER" },
-	{ wxLANGUAGE_SWEDISH, ".SWE" },
-	{ wxLANGUAGE_TURKISH, ".TUR" },
-
-	{ wxLANGUAGE_GREEK, ".GRE" },
-	{ wxLANGUAGE_RUSSIAN, ".RUS" },
-	{ wxLANGUAGE_HEBREW, ".HEB" },
-	{ wxLANGUAGE_ARABIC, ".ARA" },
-	{ wxLANGUAGE_FARSI, ".FAR" },
-	{ wxLANGUAGE_KOREAN, ".KOR" },
-	{ wxLANGUAGE_JAPANESE, ".JAP" },
-	{ wxLANGUAGE_CHINESE_SIMPLIFIED, ".CHS" },
-	{ wxLANGUAGE_CHINESE_TRADITIONAL, ".CHT" }
+	{ "el", ".GRE" },
+	{ "ru", ".RUS" },
+	{ "ar", ".ARA" },
+	{ "fa", ".FAR" },
+	{ "ko", ".KOR" },
+	{ "ja", ".JAP" },
+	{ "zh_CN", ".CHS" },
+	{ "zh_TW", ".CHT" }
 };
 
 std::vector<std::string> PostProcessingShaderConfiguration::GetAvailableShaderNames(const std::string& sub_dir)
@@ -816,7 +818,7 @@ void PostProcessingShaderConfiguration::LoadOptionsConfiguration()
 	if (Core::IsRunning())
 	{
 		std::string PresetPath = File::GetUserPath(D_PPSHADERSPRESETS_IDX);
-		PresetPath += SConfig::GetInstance().m_strUniqueID + DIR_SEP;
+		PresetPath += SConfig::GetInstance().m_strGameID + DIR_SEP;
 		PresetPath += m_shader_name + ".ini";
 		if (File::Exists(PresetPath))
 		{
@@ -841,7 +843,7 @@ void PostProcessingShaderConfiguration::SaveOptionsConfiguration()
 		{
 			File::CreateDir(file_path);
 		}
-		file_path += SConfig::GetInstance().m_strUniqueID + DIR_SEP;
+		file_path += SConfig::GetInstance().m_strGameID + DIR_SEP;
 		if (!File::Exists(file_path))
 		{
 			File::CreateDir(file_path);
@@ -1140,17 +1142,17 @@ bool PostProcessingShader::ResizeOutputTextures(const TargetSize& new_size)
 	TextureCacheBase::TCacheEntryConfig config;
 	config.width = m_prev_frame_size.width;
 	config.height = m_prev_frame_size.height;
-	
+
 	config.rendertarget = true;
 	config.layers = m_internal_layers;
 
 	for (size_t i = 0; i < m_prev_frame_texture.size(); i++)
 	{
 		config.pcformat = PC_TexFormat::PC_TEX_FMT_RGBA32;
-		if (i < frameoutput.color_count)
+		if (i < static_cast<size_t>(frameoutput.color_count))
 			m_prev_frame_texture[i].color_frame.reset(g_texture_cache->CreateTexture(config));
 		config.pcformat = PC_TexFormat::PC_TEX_FMT_R32;
-		if (i < frameoutput.depth_count)
+		if (i < static_cast<size_t>(frameoutput.depth_count))
 			m_prev_frame_texture[i].depth_frame.reset(g_texture_cache->CreateTexture(config));
 	}
 	config.pcformat = PC_TexFormat::PC_TEX_FMT_RGBA32;
@@ -1167,14 +1169,14 @@ bool PostProcessingShader::ResizeOutputTextures(const TargetSize& new_size)
 		}
 
 		config.width = pass.output_size.width;
-		config.height = pass.output_size.height;		
+		config.height = pass.output_size.height;
 		pass.output_texture = g_texture_cache->CreateTexture(config);
 	}
 	m_internal_size = new_size;
 	return true;
 }
 
-PostProcessor::PostProcessor()
+PostProcessor::PostProcessor(API_TYPE apitype) : m_APIType(apitype)
 {
 	m_timer.Start();
 }
@@ -1253,6 +1255,60 @@ bool PostProcessor::XFBDepthDataRequired() const
 			(g_ActiveConfig.iPostProcessingTrigger == POST_PROCESSING_TRIGGER_ON_SWAP && !g_ActiveConfig.bUseXFB)));
 }
 
+void  PostProcessor::DoEFB(const TargetRectangle* src_rect)
+{
+	TargetSize target_size(g_renderer->GetTargetWidth(), g_renderer->GetTargetHeight());
+	TargetRectangle target_rect;
+	if (src_rect)
+	{
+		target_rect = { src_rect->left, src_rect->top, src_rect->right, src_rect->bottom };
+		if (m_APIType == API_OPENGL)
+		{
+			// hack to avoid vieport erro in pp shaders, it works well on amd but fails in everything else
+			// TODO: investigate the reazon
+			target_rect.bottom = 0;
+			target_rect.top = target_size.height;
+		}
+	}
+	else
+	{
+		// Copied from Renderer::SetViewport
+		int scissorXOff = bpmem.scissorOffset.x * 2;
+		int scissorYOff = bpmem.scissorOffset.y * 2;
+		float X = Renderer::EFBToScaledXf(xfmem.viewport.xOrig - xfmem.viewport.wd - (float)scissorXOff);
+		float Y;
+		if (m_APIType == API_OPENGL)
+		{
+			Y = Renderer::EFBToScaledYf((float)EFB_HEIGHT - xfmem.viewport.yOrig + xfmem.viewport.ht +
+				(float)scissorYOff);
+		}
+		else
+		{
+			Y = Renderer::EFBToScaledYf(xfmem.viewport.yOrig + xfmem.viewport.ht - (float)scissorYOff);
+		}
+		
+		float Width = Renderer::EFBToScaledXf(2.0f * xfmem.viewport.wd);
+		float Height = Renderer::EFBToScaledYf(-2.0f * xfmem.viewport.ht);
+		if (Width < 0)
+		{
+			X += Width;
+			Width *= -1;
+		}
+		if (Height < 0)
+		{
+			Y += Height;
+			Height *= -1;
+		}
+		target_rect = { static_cast<int>(X), static_cast<int>(Y),
+			static_cast<int>(X + Width), static_cast<int>(Y + Height) };
+		if (m_APIType == API_OPENGL)
+		{
+			std::swap(target_rect.top, target_rect.bottom);
+		}
+	}
+	PostProcessEFB(target_rect, target_size);
+}
+
 void PostProcessor::OnProjectionLoaded(u32 type)
 {
 	if (!m_active || !g_ActiveConfig.bPostProcessingEnable ||
@@ -1275,7 +1331,7 @@ void PostProcessor::OnProjectionLoaded(u32 type)
 			m_projection_state == PROJECTION_STATE_PERSPECTIVE)
 		{
 			m_projection_state = PROJECTION_STATE_FINAL;
-			PostProcessEFB(nullptr);
+			DoEFB(nullptr);
 		}
 	}
 }
@@ -1292,7 +1348,7 @@ void PostProcessor::OnEFBCopy(const TargetRectangle* src_rect)
 	if (m_projection_state == PROJECTION_STATE_PERSPECTIVE
 		&& (src_rect == nullptr || (src_rect->GetWidth() > ((Renderer::GetTargetWidth() * 2) / 3))))
 	{
-		PostProcessEFB(src_rect);
+		DoEFB(src_rect);
 		m_projection_state = PROJECTION_STATE_FINAL;
 	}
 }
@@ -1308,7 +1364,7 @@ void PostProcessor::OnEndFrame()
 
 	// If we didn't switch to orthographic after perspective, post-process now (e.g. if no HUD was drawn)
 	if (m_projection_state == PROJECTION_STATE_PERSPECTIVE)
-		PostProcessEFB(nullptr);
+		DoEFB(nullptr);
 
 	m_projection_state = PROJECTION_STATE_INITIAL;
 }
@@ -2372,7 +2428,7 @@ std::string PostProcessor::GetPassFragmentShaderSource(
 	return shader_source;
 }
 
-bool  PostProcessor::UpdateConstantUniformBuffer(API_TYPE api,
+bool  PostProcessor::UpdateConstantUniformBuffer(
 	const InputTextureSizeArray& input_sizes,
 	const TargetRectangle& dst_rect, const TargetSize& dst_size,
 	const TargetRectangle& src_rect, const TargetSize& src_size,
@@ -2401,7 +2457,7 @@ bool  PostProcessor::UpdateConstantUniformBuffer(API_TYPE api,
 
 	// float4 src_rect
 	temp.float_constant[0] = (float)src_rect.left / (float)src_size.width;
-	temp.float_constant[1] = (float)((api == API_OPENGL) ? src_rect.bottom : src_rect.top) / (float)src_size.height;
+	temp.float_constant[1] = (float)((m_APIType == API_OPENGL) ? src_rect.bottom : src_rect.top) / (float)src_size.height;
 	temp.float_constant[2] = (float)src_rect.GetWidth() / (float)src_size.width;
 	temp.float_constant[3] = (float)src_rect.GetHeight() / (float)src_size.height;
 	m_new_constants[constant_idx] = temp;
@@ -2409,7 +2465,7 @@ bool  PostProcessor::UpdateConstantUniformBuffer(API_TYPE api,
 
 	// float4 target_rect
 	temp.float_constant[0] = (float)dst_rect.left / (float)dst_size.width;
-	temp.float_constant[1] = (float)((api == API_OPENGL) ? dst_rect.bottom : dst_rect.top) / (float)dst_size.height;
+	temp.float_constant[1] = (float)((m_APIType == API_OPENGL) ? dst_rect.bottom : dst_rect.top) / (float)dst_size.height;
 	temp.float_constant[2] = (float)dst_rect.GetWidth() / (float)dst_size.width;
 	temp.float_constant[3] = (float)dst_rect.GetHeight() / (float)dst_size.height;
 	m_new_constants[constant_idx] = temp;

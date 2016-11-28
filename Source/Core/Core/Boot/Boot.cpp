@@ -10,6 +10,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
 #include "Common/MathUtil.h"
+#include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
 
 #include "Core/Boot/Boot.h"
@@ -17,6 +18,7 @@
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/Debugger/Debugger_SymbolMap.h"
+#include "Core/GeckoCode.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HW/DVDInterface.h"
 #include "Core/HW/EXI_DeviceIPL.h"
@@ -119,7 +121,7 @@ bool CBoot::FindMapFile(std::string* existing_map_file, std::string* writable_ma
 		break;
 
 	default:
-		title_id_str = _StartupPara.GetUniqueID();
+		title_id_str = _StartupPara.GetGameID();
 		break;
 	}
 
@@ -131,7 +133,7 @@ bool CBoot::FindMapFile(std::string* existing_map_file, std::string* writable_ma
 
 	bool found = false;
 	static const std::string maps_directories[] =
- 	{
+	{
 		File::GetUserPath(D_MAPS_IDX),
 		File::GetSysDirectory() + MAPS_DIR DIR_SEP
 	};
@@ -275,9 +277,9 @@ bool CBoot::BootUp()
 			PanicAlertT("Warning - starting ISO in wrong console mode!");
 		}
 
-		std::string unique_id = DVDInterface::GetVolume().GetUniqueID();
-		if (unique_id.size() >= 4)
-			VideoInterface::SetRegionReg(unique_id.at(3));
+		std::string game_id = DVDInterface::GetVolume().GetGameID();
+		if (game_id.size() >= 4)
+			VideoInterface::SetRegionReg(game_id.at(3));
 
 		std::vector<u8> tmd_buffer = pVolume.GetTMD();
 		if (!tmd_buffer.empty())
@@ -304,7 +306,7 @@ bool CBoot::BootUp()
 		}
 
 		// Scan for common HLE functions
-		if (_StartupPara.bSkipIdle && _StartupPara.bHLE_BS2 && !_StartupPara.bEnableDebugging)
+		if (_StartupPara.bHLE_BS2 && !_StartupPara.bEnableDebugging)
 		{
 			PPCAnalyst::FindFunctions(0x80004000, 0x811fffff, &g_symbolDB);
 			SignatureDB db;
@@ -484,6 +486,9 @@ bool CBoot::BootUp()
 
 	// Not part of the binary itself, but either we or Gecko OS might insert
 	// this, and it doesn't clear the icache properly.
-	HLE::Patch(0x800018a8, "GeckoCodehandler");
+	HLE::Patch(Gecko::ENTRY_POINT, "GeckoCodehandler");
+	// This has to always be installed even if cheats are not enabled because of the possiblity of
+	// loading a savestate where PC is inside the code handler while cheats are disabled.
+	HLE::Patch(Gecko::HLE_TRAMPOLINE_ADDRESS, "GeckoHandlerReturnTrampoline");
 	return true;
 }

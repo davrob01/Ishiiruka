@@ -138,6 +138,9 @@ static wxString stc_desc = _("The safer you adjust this, the less likely the emu
 static wxString bbox_desc = _("Selects wish implementation is used to emulate Bounding Box. By Default GPU will be used if supported.");
 static wxString wireframe_desc = _("Render the scene as a wireframe.\n\nIf unsure, leave this unchecked.");
 static wxString disable_fog_desc = _("Makes distant objects more visible by removing fog, thus increasing the overall detail.\nDisabling fog will break some games which rely on proper fog emulation.\n\nIf unsure, leave this unchecked.");
+static wxString true_color_desc = _("Forces the game to render the RGB color channels in 24-bit, thereby increasing "
+	"quality by reducing color banding.\nIt improves performance and causes "
+	"few graphical issues.\n\n\nIf unsure, leave this checked.");
 static wxString disable_dstalpha_desc = _("Disables emulation of a hardware feature called destination alpha, which is used in many games for various graphical effects.\n\nIf unsure, leave this unchecked.");
 static wxString show_fps_desc =
 wxTRANSLATE("Show the number of frames rendered per second as a measure of "
@@ -458,6 +461,7 @@ VideoConfigDiag::VideoConfigDiag(wxWindow* parent, const std::string &title)
 
 		szr_enh->Add(CreateCheckBox(page_enh, _("Widescreen Hack"), (ws_hack_desc), vconfig.bWidescreenHack));
 		szr_enh->Add(CreateCheckBox(page_enh, _("Disable Fog"), (disable_fog_desc), vconfig.bDisableFog));
+		szr_enh->Add(CreateCheckBox(page_enh, _("Force 24-bit Color"), (true_color_desc), vconfig.bForceTrueColor));
 		szr_enh->Add(pixel_lighting = CreateCheckBox(page_enh, _("Per-Pixel Lighting"), (pixel_lighting_desc), vconfig.bEnablePixelLighting));
 		szr_enh->Add(phong_lighting = CreateCheckBox(page_enh, _("Phong Lighting"), (phong_lighting_desc), vconfig.bForcePhongShading));
 		szr_enh->Add(sim_bump = CreateCheckBox(page_enh, _("Auto Bumps"), (bump_desc), vconfig.bSimBumpEnabled));
@@ -902,10 +906,8 @@ VideoConfigDiag::VideoConfigDiag(wxWindow* parent, const std::string &title)
 			szr_utility->Add(CreateCheckBox(page_advanced, _("Dump Vertex Loaders"), (dump_VertexTranslators_desc), vconfig.bDumpVertexLoaders));
 			szr_utility->Add(CreateCheckBox(page_advanced, _("Load Custom Textures"), (load_hires_textures_desc), vconfig.bHiresTextures));
 			cache_hires_textures = CreateCheckBox(page_advanced, _("Prefetch Custom Textures"), cache_hires_textures_desc, vconfig.bCacheHiresTextures);
-			cache_hires_texturesGPU = CreateCheckBox(page_advanced, _("Cache Custom Textures on GPU"), cache_hires_textures_gpu_desc, vconfig.bCacheHiresTexturesGPU);
 			hires_texturemaps = CreateCheckBox(page_advanced, _("Load Custom Material Maps"), load_hires_material_maps_desc, vconfig.bHiresMaterialMaps);
 			szr_utility->Add(cache_hires_textures);
-			szr_utility->Add(cache_hires_texturesGPU);
 			szr_utility->Add(hires_texturemaps);
 			szr_utility->Add(CreateCheckBox(page_advanced, _("Dump EFB Target"), (dump_efb_desc), vconfig.bDumpEFBTarget));
 			szr_utility->Add(CreateCheckBox(page_advanced, _("Free Look"), (free_look_desc), vconfig.bFreeLook));
@@ -934,9 +936,6 @@ VideoConfigDiag::VideoConfigDiag(wxWindow* parent, const std::string &title)
 				progressive_scan_checkbox->Bind(wxEVT_CHECKBOX, &VideoConfigDiag::Event_ProgressiveScan, this);
 
 				progressive_scan_checkbox->SetValue(SConfig::GetInstance().bProgressive);
-				// A bit strange behavior, but this needs to stay in sync with the main progressive boolean; TODO: Is this still necessary?
-				SConfig::GetInstance().m_SYSCONF->SetData("IPL.PGS", SConfig::GetInstance().bProgressive);
-
 				szr_misc->Add(progressive_scan_checkbox);
 			}
 #if defined WIN32
@@ -1103,7 +1102,6 @@ void VideoConfigDiag::Event_Adapter(wxCommandEvent &ev)
 
 void VideoConfigDiag::Event_ProgressiveScan(wxCommandEvent &ev)
 {
-	SConfig::GetInstance().m_SYSCONF->SetData("IPL.PGS", ev.GetInt());
 	SConfig::GetInstance().bProgressive = ev.IsChecked();
 
 	ev.Skip();
@@ -1434,7 +1432,7 @@ void VideoConfigDiag::OnUpdateUI(wxUpdateUIEvent& ev)
 #if defined WIN32
 	// Borderless Fullscreen
 	borderless_fullscreen->Enable((vconfig.backend_info.APIType & API_D3D9) == 0);
-	borderless_fullscreen->Show((vconfig.backend_info.APIType & API_D3D9) == 0);	
+	borderless_fullscreen->Show((vconfig.backend_info.APIType & API_D3D9) == 0);
 #endif	
 	// EFB Access Cache
 	Fast_efb_cache->Show(vconfig.bEFBAccessEnable);
@@ -1444,7 +1442,6 @@ void VideoConfigDiag::OnUpdateUI(wxUpdateUIEvent& ev)
 
 	// custom textures
 	cache_hires_textures->Enable(vconfig.bHiresTextures);
-	cache_hires_texturesGPU->Enable(vconfig.bHiresTextures);
 	hires_texturemaps->Enable(vconfig.bHiresTextures && vconfig.bEnablePixelLighting);
 	hires_texturemaps->Show(vconfig.backend_info.bSupportsNormalMaps);
 

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Common/Common.h"
+#include "Common/MsgHandler.h"
 
 namespace DX11
 {
@@ -65,8 +66,9 @@ bool BGRA565TexturesSupported();
 
 unsigned int GetMaxTextureSize();
 bool SupportPartialContantBufferUpdate();
+
 HRESULT SetFullscreenState(bool enable_fullscreen);
-HRESULT GetFullscreenState(bool* fullscreen_state);
+bool GetFullscreenState();
 
 // Ihis function will assign a name to the given resource.
 // The DirectX debug layer will make it easier to identify resources that way,

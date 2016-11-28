@@ -58,7 +58,7 @@ static bool s_vsync;
 static bool s_b3D_RightFrame = false;
 static LPDIRECT3DSURFACE9 ScreenShootMEMSurface = NULL;
 static bool s_last_fullscreen_mode;
-static D3DVIEWPORT9 s_vp{};
+
 void SetupDeviceObjects()
 {
 	D3D::font.Init();
@@ -187,8 +187,8 @@ Renderer::Renderer(void *&window_handle)
 	m_bColorMaskChanged = true;
 	m_bBlendModeChanged = true;
 	m_bScissorRectChanged = true;
-	m_bViewPortChanged = true,
-		m_bGenerationModeChanged = true;
+	m_bViewPortChanged = true;
+	m_bGenerationModeChanged = true;
 	m_bDepthModeChanged = true;
 	m_bLogicOpModeChanged = true;
 }
@@ -239,7 +239,7 @@ namespace DX9
 
 // With D3D, we have to resize the backbuffer if the window changed
 // size.
-void Renderer::CheckForResize(bool &resized, bool &fullscreen, bool &fullscreencahnged)
+void Renderer::CheckForResize(bool &resized)
 {
 	RECT rcWindow;
 	GetClientRect(D3D::hWnd, &rcWindow);
@@ -251,12 +251,7 @@ void Renderer::CheckForResize(bool &resized, bool &fullscreen, bool &fullscreenc
 		|| s_vsync != g_ActiveConfig.IsVSync()) &&
 		client_width >= 4 && client_height >= 4;
 
-	fullscreen = g_ActiveConfig.bFullscreen &&
-		!SConfig::GetInstance().bRenderToMain;
-
-	fullscreencahnged = s_last_fullscreen_mode != fullscreen;
-
-	if (resized || fullscreencahnged)
+	if (resized)
 	{
 		// Handle vsync changes during execution
 		s_vsync = g_ActiveConfig.IsVSync();
@@ -344,7 +339,7 @@ void Renderer::PokeEFB(EFBAccessType type, const EfbPokeData* points, size_t num
 	vp.Y = 0;
 	vp.Width = GetTargetWidth();
 	vp.Height = GetTargetHeight();
-	
+
 
 	if (xfmem.viewport.zRange < 0.0f)
 	{
@@ -451,33 +446,11 @@ void Renderer::ReinterpretPixelData(unsigned int convtype)
 	FramebufferManager::InvalidateEFBCache();
 }
 
-bool Renderer::SaveScreenshot(const std::string &filename, const TargetRectangle &dst_rect)
-{
-	HRESULT hr = D3D::dev->GetRenderTargetData(D3D::GetBackBufferSurface(), ScreenShootMEMSurface);
-	if (FAILED(hr))
-	{
-		PanicAlert("Error dumping surface data.");
-		return false;
-	}
-	hr = PD3DXSaveSurfaceToFileA(filename.c_str(), D3DXIFF_PNG, ScreenShootMEMSurface, NULL, dst_rect.AsRECT());
-	if (FAILED(hr))
-	{
-		PanicAlert("Error saving screen.");
-		return false;
-	}
-	OSD::AddMessage(StringFromFormat("Saved %i x %i %s", dst_rect.GetWidth(), dst_rect.GetHeight(), filename.c_str()));
-
-	return true;
-}
-
 // This function has the final picture. We adjust the aspect ratio here.
-void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, float Gamma)
+void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, u64 ticks, float Gamma)
 {
-	if (Fifo::WillSkipCurrentFrame() || (!XFBWrited && !g_ActiveConfig.RealXFBEnabled()) || !fbWidth || !fbHeight)
+	if ((!XFBWrited && !g_ActiveConfig.RealXFBEnabled()) || !fbWidth || !fbHeight)
 	{
-		if (SConfig::GetInstance().m_DumpFrames && !frame_data.empty())
-			AVIDump::AddFrame(&frame_data[0], fbWidth, fbHeight);
-
 		Core::Callback_VideoCopiedToXFB(false);
 		return;
 	}
@@ -486,9 +459,6 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, co
 	const XFBSourceBase* const* xfbSourceList = FramebufferManager::GetXFBSource(xfbAddr, fbStride, fbHeight, &xfbCount);
 	if ((!xfbSourceList || xfbCount == 0) && g_ActiveConfig.bUseXFB && !g_ActiveConfig.bUseRealXFB)
 	{
-		if (SConfig::GetInstance().m_DumpFrames && !frame_data.empty())
-			AVIDump::AddFrame(&frame_data[0], fbWidth, fbHeight);
-
 		Core::Callback_VideoCopiedToXFB(false);
 		return;
 	}
@@ -669,61 +639,22 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, co
 	vp.MaxZ = 1.0f;
 	D3D::dev->SetViewport(&vp);
 
-	// Save screenshot
-	if (s_bScreenshot)
-	{
-		std::lock_guard<std::mutex> lk(s_criticalScreenshot);
-		SaveScreenshot(s_sScreenshotName, GetTargetRectangle());
-		s_bScreenshot = false;
-	}
-
 	// Dump frames
-	if (SConfig::GetInstance().m_DumpFrames)
+	if (IsFrameDumping())
 	{
 		int source_width = GetTargetRectangle().GetWidth();
 		int source_height = GetTargetRectangle().GetHeight();
 		HRESULT hr = D3D::dev->GetRenderTargetData(D3D::GetBackBufferSurface(), ScreenShootMEMSurface);
-		if (!bLastFrameDumped)
+		D3DLOCKED_RECT rect;
+		if (SUCCEEDED(ScreenShootMEMSurface->LockRect(&rect, GetTargetRectangle().AsRECT(), D3DLOCK_NO_DIRTY_UPDATE | D3DLOCK_NOSYSLOCK | D3DLOCK_READONLY)))
 		{
-			bAVIDumping = AVIDump::Start(source_width, source_height, AVIDump::DumpFormat::FORMAT_BGR);
-			if (!bAVIDumping)
-			{
-				PanicAlert("Error dumping frames to AVI.");
-			}
-			else
-			{
-				std::string msg = StringFromFormat("Dumping Frames to \"%sframedump0.avi\" (%dx%d RGB24)",
-					File::GetUserPath(D_DUMPFRAMES_IDX).c_str(),
-					source_width, source_height);
-				OSD::AddMessage(msg, 2000);
-			}
-		}
-		if (bAVIDumping)
-		{
-			D3DLOCKED_RECT rect;
-			if (SUCCEEDED(ScreenShootMEMSurface->LockRect(&rect, GetTargetRectangle().AsRECT(), D3DLOCK_NO_DIRTY_UPDATE | D3DLOCK_NOSYSLOCK | D3DLOCK_READONLY)))
-			{
-				if (frame_data.capacity() != 3 * source_width * source_height)
-					frame_data.resize(3 * source_width * source_height);
+			AVIDump::Frame state = AVIDump::FetchState(ticks);
+			DumpFrameData(reinterpret_cast<const u8*>(rect.pBits), source_width, source_height,
+				rect.Pitch, state, false, true);
+			FinishFrameData();
 
-				formatBufferDump((const u8*)rect.pBits, &frame_data[0], source_width, source_height, rect.Pitch);
-				FlipImageData(&frame_data[0], source_width, source_height);
-				AVIDump::AddFrame(&frame_data[0], GetTargetRectangle().GetWidth(), GetTargetRectangle().GetHeight());
-				ScreenShootMEMSurface->UnlockRect();
-			}
+			ScreenShootMEMSurface->UnlockRect();
 		}
-		bLastFrameDumped = true;
-	}
-	else
-	{
-		if (bLastFrameDumped && bAVIDumping)
-		{
-			std::vector<u8>().swap(frame_data);
-			AVIDump::Stop();
-			bAVIDumping = false;
-			OSD::AddMessage("Stop dumping frames to AVI", 2000);
-		}
-		bLastFrameDumped = false;
 	}
 
 	Renderer::DrawDebugText();
@@ -742,9 +673,7 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, co
 	SetWindowSize(fbStride, fbHeight);
 
 	bool windowResized;
-	bool fullscreen;
-	bool fullscreen_changed;
-	CheckForResize(windowResized, fullscreen, fullscreen_changed);;
+	CheckForResize(windowResized);
 
 	bool xfbchanged = false;
 
@@ -762,7 +691,6 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, co
 	if (CalculateTargetSize(s_backbuffer_width, s_backbuffer_height, (newAA % 3) + 1)
 		|| xfbchanged
 		|| windowResized
-		|| fullscreen_changed
 		|| s_last_efb_scale != g_ActiveConfig.iEFBScale
 		|| s_LastAA != newAA)
 	{
@@ -777,18 +705,8 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, co
 		D3D::dev->SetRenderTarget(0, D3D::GetBackBufferSurface());
 		D3D::dev->SetDepthStencilSurface(D3D::GetBackBufferDepthSurface());
 
-		if (windowResized || fullscreen_changed)
+		if (windowResized)
 		{
-			// Apply fullscreen state
-			if (fullscreen_changed)
-			{
-				s_last_fullscreen_mode = fullscreen;
-				// Notify the host that it is safe to exit fullscreen
-				if (!fullscreen)
-				{
-					Host_RequestFullscreen(false);
-				}
-			}
 			if (!D3D::GetEXSupported())
 			{
 				// device objects lost, so recreate all of them
@@ -841,63 +759,77 @@ void Renderer::RestoreAPIState()
 	m_bViewPortChanged = true;
 }
 
+void Renderer::_SetViewport()
+{
+	if (m_bViewPortChangedRequested)
+	{
+		m_bViewPortChangedRequested = false;
+		// reversed gxsetviewport(xorig, yorig, width, height, nearz, farz)
+		// [0] = width/2
+		// [1] = height/2
+		// [2] = 16777215 * (farz - nearz)
+		// [3] = xorig + width/2 + 342
+		// [4] = yorig + height/2 + 342
+		// [5] = 16777215 * farz
+
+		// D3D crashes for zero viewports
+		if (xfmem.viewport.wd == 0 || xfmem.viewport.ht == 0)
+			return;
+
+		int scissorXOff = bpmem.scissorOffset.x * 2;
+		int scissorYOff = bpmem.scissorOffset.y * 2;
+
+		// TODO: ceil, floor or just cast to int?
+		int X = EFBToScaledX((int)ceil(xfmem.viewport.xOrig - xfmem.viewport.wd - scissorXOff));
+		int Y = EFBToScaledY((int)ceil(xfmem.viewport.yOrig + xfmem.viewport.ht - scissorYOff));
+		int Wd = EFBToScaledX((int)ceil(2.0f * xfmem.viewport.wd));
+		int Ht = EFBToScaledY((int)ceil(-2.0f * xfmem.viewport.ht));
+		if (Wd < 0)
+		{
+			X += Wd;
+			Wd = -Wd;
+		}
+		if (Ht < 0)
+		{
+			Y += Ht;
+			Ht = -Ht;
+		}
+
+		// In D3D, the viewport rectangle must fit within the render target.
+		X = (X >= 0) ? X : 0;
+		Y = (Y >= 0) ? Y : 0;
+		Wd = (X + Wd <= GetTargetWidth()) ? Wd : (GetTargetWidth() - X);
+		Ht = (Y + Ht <= GetTargetHeight()) ? Ht : (GetTargetHeight() - Y);
+
+		m_vp.X = X;
+		m_vp.Y = Y;
+		m_vp.Width = Wd;
+		m_vp.Height = Ht;
+
+		if (xfmem.viewport.zRange < 0.0f)
+		{
+			m_vp.MinZ = 1.0f - GX_MAX_DEPTH;
+			m_vp.MaxZ = 1.0f;
+		}
+		else
+		{
+			float nearz = xfmem.viewport.farZ - MathUtil::Clamp<float>(xfmem.viewport.zRange, 0.0f, 16777215.0f);
+			// Some games set invalids values for z min and z max so fix them to the max an min alowed and let the shaders do this work
+			m_vp.MaxZ = 1.0f - (MathUtil::Clamp<float>(nearz, 0.0f, 16777215.0f) / 16777216.0f);
+			m_vp.MinZ = 1.0f - (MathUtil::Clamp<float>(xfmem.viewport.farZ, 0.0f, 16777215.0f) / 16777216.0f);
+		}
+	}
+	if (m_bViewPortChanged)
+	{
+		D3D::dev->SetViewport(&m_vp);
+		m_bViewPortChanged = false;
+	}
+}
+
 // Called from VertexShaderManager
 void Renderer::SetViewport()
 {
-	// reversed gxsetviewport(xorig, yorig, width, height, nearz, farz)
-	// [0] = width/2
-	// [1] = height/2
-	// [2] = 16777215 * (farz - nearz)
-	// [3] = xorig + width/2 + 342
-	// [4] = yorig + height/2 + 342
-	// [5] = 16777215 * farz
-
-	// D3D crashes for zero viewports
-	if (xfmem.viewport.wd == 0 || xfmem.viewport.ht == 0)
-		return;
-
-	int scissorXOff = bpmem.scissorOffset.x * 2;
-	int scissorYOff = bpmem.scissorOffset.y * 2;
-
-	// TODO: ceil, floor or just cast to int?
-	int X = EFBToScaledX((int)ceil(xfmem.viewport.xOrig - xfmem.viewport.wd - scissorXOff));
-	int Y = EFBToScaledY((int)ceil(xfmem.viewport.yOrig + xfmem.viewport.ht - scissorYOff));
-	int Wd = EFBToScaledX((int)ceil(2.0f * xfmem.viewport.wd));
-	int Ht = EFBToScaledY((int)ceil(-2.0f * xfmem.viewport.ht));
-	if (Wd < 0)
-	{
-		X += Wd;
-		Wd = -Wd;
-	}
-	if (Ht < 0)
-	{
-		Y += Ht;
-		Ht = -Ht;
-	}
-
-	// In D3D, the viewport rectangle must fit within the render target.
-	X = (X >= 0) ? X : 0;
-	Y = (Y >= 0) ? Y : 0;
-	Wd = (X + Wd <= GetTargetWidth()) ? Wd : (GetTargetWidth() - X);
-	Ht = (Y + Ht <= GetTargetHeight()) ? Ht : (GetTargetHeight() - Y);
-
-	s_vp.X = X;
-	s_vp.Y = Y;
-	s_vp.Width = Wd;
-	s_vp.Height = Ht;
-
-	if (xfmem.viewport.zRange < 0.0f)
-	{
-		s_vp.MinZ = 1.0f - GX_MAX_DEPTH;
-		s_vp.MaxZ = 1.0f;
-	}
-	else
-	{
-		float nearz = xfmem.viewport.farZ - MathUtil::Clamp<float>(xfmem.viewport.zRange, 0.0f, 16777215.0f);
-		// Some games set invalids values for z min and z max so fix them to the max an min alowed and let the shaders do this work
-		s_vp.MaxZ = 1.0f - (MathUtil::Clamp<float>(nearz, 0.0f, 16777215.0f) / 16777216.0f);
-		s_vp.MinZ = 1.0f - (MathUtil::Clamp<float>(xfmem.viewport.farZ, 0.0f, 16777215.0f) / 16777216.0f);
-	}
+	m_bViewPortChangedRequested = true;
 	m_bViewPortChanged = true;
 }
 
@@ -935,8 +867,7 @@ void Renderer::ApplyState(bool bUseDstAlpha)
 
 	if (m_bViewPortChanged)
 	{
-		D3D::dev->SetViewport(&s_vp);
-		m_bViewPortChanged = false;
+		_SetViewport();
 	}
 
 	if (bUseDstAlpha)
@@ -1099,7 +1030,7 @@ void Renderer::SetGenerationMode()
 void Renderer::_SetGenerationMode()
 {
 	m_bGenerationModeChanged = false;
-	const D3DCULL d3dCullModes[4] =
+	static const D3DCULL d3dCullModes[4] =
 	{
 		D3DCULL_NONE,
 		D3DCULL_CCW,
@@ -1117,7 +1048,7 @@ void Renderer::SetDepthMode()
 void Renderer::_SetDepthMode()
 {
 	m_bDepthModeChanged = false;
-	const D3DCMPFUNC d3dCmpFuncs[8] =
+	static const D3DCMPFUNC d3dCmpFuncs[8] =
 	{
 		D3DCMP_NEVER,
 		D3DCMP_GREATER,
@@ -1316,9 +1247,9 @@ void Renderer::SetSamplerState(int stage, int texindex, bool custom_tex)
 	D3D::SetSamplerState(stage, D3DSAMP_MAXMIPLEVEL, tm1.min_lod >> 4);
 }
 
-int Renderer::GetMaxTextureSize()
+u32 Renderer::GetMaxTextureSize()
 {
-	return D3D::GetCaps().MaxTextureWidth;
+	return static_cast<u32>(D3D::GetCaps().MaxTextureWidth); ;
 }
 
 }  // namespace DX9

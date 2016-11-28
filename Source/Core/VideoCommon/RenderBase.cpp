@@ -20,13 +20,16 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/Event.h"
+#include "Common/FileUtil.h"
 #include "Common/Flag.h"
 #include "Common/Profiler.h"
 #include "Common/StringUtil.h"
+#include "Common/Thread.h"
 #include "Common/Timer.h"
 
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
+#include "Core/CoreTiming.h"
 #include "Core/Host.h"
 #include "Core/Movie.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
@@ -40,6 +43,8 @@
 #include "VideoCommon/FPSCounter.h"
 #include "VideoCommon/FramebufferManagerBase.h"
 #include "VideoCommon/GeometryShaderManager.h"
+#include "VideoCommon/ImageWrite.h"
+#include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/PixelShaderManager.h"
 #include "VideoCommon/PostProcessing.h"
 #include "VideoCommon/RenderBase.h"
@@ -61,11 +66,7 @@ std::string Renderer::s_sScreenshotName;
 
 Common::Event Renderer::s_screenshotCompleted;
 
-volatile bool Renderer::s_bScreenshot;
-
-// Final surface changing
-Common::Flag  Renderer::s_SurfaceNeedsChanged;
-Common::Event Renderer::s_ChangedSurface;
+Common::Flag Renderer::s_screenshot;
 
 // The framebuffer size
 int Renderer::s_target_width;
@@ -76,6 +77,11 @@ int Renderer::s_backbuffer_width;
 int Renderer::s_backbuffer_height;
 
 std::unique_ptr<PostProcessor> Renderer::m_post_processor;
+
+// Final surface changing
+Common::Flag Renderer::s_surface_needs_change;
+Common::Event Renderer::s_surface_changed;
+void* Renderer::s_new_surface_handle;
 
 TargetRectangle Renderer::target_rc;
 TargetRectangle Renderer::window_rc;
@@ -103,16 +109,9 @@ static float AspectToWidescreen(float aspect)
 }
 
 Renderer::Renderer()
-	: frame_data()
-	, bLastFrameDumped(false)
 {
 	UpdateActiveConfig();
 	TextureCacheBase::OnConfigChanged(g_ActiveConfig);
-
-#if defined _WIN32 || defined HAVE_LIBAV
-	bAVIDumping = false;
-#endif
-
 	OSDChoice = 0;
 	OSDTime = 0;
 }
@@ -123,10 +122,10 @@ Renderer::~Renderer()
 	prev_efb_format = PEControl::INVALID_FMT;
 
 	efb_scale_numeratorX = efb_scale_numeratorY = efb_scale_denominatorX = efb_scale_denominatorY = 1;
-#if defined _WIN32 || defined HAVE_LIBAV
-	if (SConfig::GetInstance().m_DumpFrames && bLastFrameDumped && bAVIDumping)
-		AVIDump::Stop();
-#endif
+	
+	ShutdownFrameDumping();
+	if (m_frame_dump_thread.joinable())
+		m_frame_dump_thread.join();
 }
 
 void Renderer::RenderToXFB(u32 xfbAddr, const EFBRectangle& sourceRc, u32 fbStride, u32 fbHeight, float Gamma)
@@ -144,8 +143,10 @@ void Renderer::RenderToXFB(u32 xfbAddr, const EFBRectangle& sourceRc, u32 fbStri
 	}
 	else
 	{
+		// The timing is not predictable here. So try to use the XFB path to dump frames.
+		u64 ticks = CoreTiming::GetTicks();
 		// below div two to convert from bytes to pixels - it expects width, not stride
-		Swap(xfbAddr, fbStride / 2, fbStride / 2, fbHeight, sourceRc, Gamma);
+		Swap(xfbAddr, fbStride / 2, fbStride / 2, fbHeight, sourceRc, ticks, Gamma);
 	}
 }
 
@@ -240,11 +241,10 @@ bool Renderer::CalculateTargetSize(unsigned int framebuffer_width, unsigned int 
 		efb_scale_denominatorX = efb_scale_denominatorY = 1;
 		break;
 	}
-	int maxSize;
-	maxSize = GetMaxTextureSize();
-	if ((unsigned)maxSize < EFB_WIDTH * multiplier * efb_scale_numeratorX / efb_scale_denominatorX)
+	const u32 max_size = GetMaxTextureSize();
+	if (max_size < EFB_WIDTH * multiplier * efb_scale_numeratorX / efb_scale_denominatorX)
 	{
-		efb_scale_numeratorX = efb_scale_numeratorY = (maxSize / (EFB_WIDTH * multiplier));
+		efb_scale_numeratorX = efb_scale_numeratorY = (max_size / (EFB_WIDTH * multiplier));
 		efb_scale_denominatorX = efb_scale_denominatorY = 1;
 	}
 
@@ -307,38 +307,47 @@ void Renderer::SetScreenshot(const std::string& filename)
 {
 	std::lock_guard<std::mutex> lk(s_criticalScreenshot);
 	s_sScreenshotName = filename;
-	s_bScreenshot = true;
+	s_screenshot.Set();
 }
+
 
 // Create On-Screen-Messages
 void Renderer::DrawDebugText()
 {
 	std::string final_yellow, final_cyan;
+
 	if (g_ActiveConfig.bShowFPS || SConfig::GetInstance().m_ShowFrameCount)
 	{
 		if (g_ActiveConfig.bShowFPS)
 			final_cyan += StringFromFormat("FPS: %u", g_renderer->m_fps_counter.GetFPS());
+
 		if (g_ActiveConfig.bShowFPS && SConfig::GetInstance().m_ShowFrameCount)
 			final_cyan += " - ";
 		if (SConfig::GetInstance().m_ShowFrameCount)
 		{
-			final_cyan += StringFromFormat("Frame: %llu", Movie::GetCurrentFrame());
+			final_cyan += StringFromFormat("Frame: %llu", (unsigned long long)Movie::GetCurrentFrame());
 			if (Movie::IsPlayingInput())
-				final_cyan += StringFromFormat(" / %llu", Movie::GetTotalFrames());
+				final_cyan += StringFromFormat("\nInput: %llu / %llu",
+				(unsigned long long)Movie::GetCurrentInputCount(),
+					(unsigned long long)Movie::GetTotalInputCount());
 		}
+
 		final_cyan += "\n";
 		final_yellow += "\n";
 	}
+
 	if (SConfig::GetInstance().m_ShowLag)
 	{
 		final_cyan += StringFromFormat("Lag: %" PRIu64 "\n", Movie::GetCurrentLagCount());
 		final_yellow += "\n";
 	}
+
 	if (SConfig::GetInstance().m_ShowInputDisplay)
 	{
 		final_cyan += Movie::GetInputDisplay();
 		final_yellow += "\n";
 	}
+
 	if (SConfig::GetInstance().m_ShowRTC)
 	{
 		final_cyan += Movie::GetRTCDisplay();
@@ -351,6 +360,7 @@ void Renderer::DrawDebugText()
 		OSDTime = Common::Timer::GetTimeMs() + 3000;
 		OSDChoice = -OSDChoice;
 	}
+
 	if ((u32)OSDTime > Common::Timer::GetTimeMs())
 	{
 		std::string res_text;
@@ -375,7 +385,7 @@ void Renderer::DrawDebugText()
 			res_text = "2.5x";
 			break;
 		default:
-			res_text += StringFromFormat("%ix", g_ActiveConfig.iEFBScale - 3);
+			res_text = StringFromFormat("%dx", g_ActiveConfig.iEFBScale - 3);
 			break;
 		}
 		const char* ar_text = "";
@@ -393,21 +403,26 @@ void Renderer::DrawDebugText()
 		case ASPECT_ANALOG_WIDE:
 			ar_text = "Force 16:9";
 		}
+
 		const char* const efbcopy_text = g_ActiveConfig.bSkipEFBCopyToRam ? "to Texture" : "to RAM";
+
 		// The rows
-		const std::string lines[] =
-		{
+		const std::string lines[] = {
 			std::string("Internal Resolution: ") + res_text,
 			std::string("Aspect Ratio: ") + ar_text + (g_ActiveConfig.bCrop ? " (crop)" : ""),
 			std::string("Copy EFB: ") + efbcopy_text,
 			std::string("Fog: ") + (g_ActiveConfig.bDisableFog ? "Disabled" : "Enabled"),
-			SConfig::GetInstance().m_EmulationSpeed <= 0 ? "Speed Limit: Unlimited" :
-			StringFromFormat("Speed Limit: %li%%", std::lround(SConfig::GetInstance().m_EmulationSpeed * 100.f)),
+			SConfig::GetInstance().m_EmulationSpeed <= 0 ?
+			"Speed Limit: Unlimited" :
+			StringFromFormat("Speed Limit: %li%%",
+				std::lround(SConfig::GetInstance().m_EmulationSpeed * 100.f)),
 		};
+
 		enum
 		{
 			lines_count = sizeof(lines) / sizeof(*lines)
 		};
+
 		// The latest changed setting in yellow
 		for (int i = 0; i != lines_count; ++i)
 		{
@@ -415,6 +430,7 @@ void Renderer::DrawDebugText()
 				final_yellow += lines[i];
 			final_yellow += '\n';
 		}
+
 		// The other settings in cyan
 		for (int i = 0; i != lines_count; ++i)
 		{
@@ -423,12 +439,16 @@ void Renderer::DrawDebugText()
 			final_cyan += '\n';
 		}
 	}
+
 	final_cyan += Common::Profiler::ToString();
+
 	if (g_ActiveConfig.bOverlayStats)
 		final_cyan += Statistics::ToString();
+
 	if (g_ActiveConfig.bOverlayProjStats)
 		final_cyan += Statistics::ToStringProj();
-	//and then the text
+
+	// and then the text
 	g_renderer->RenderText(final_cyan, 20, 20, 0xFF00FFFF);
 	g_renderer->RenderText(final_yellow, 20, 20, 0xFFFFFF00);
 }
@@ -624,10 +644,10 @@ void Renderer::RecordVideoMemory()
 }
 
 
-void Renderer::Swap(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, float Gamma)
+void Renderer::Swap(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, u64 ticks, float Gamma)
 {
 	// TODO: merge more generic parts into VideoCommon
-	g_renderer->SwapImpl(xfbAddr, fbWidth, fbStride, fbHeight, rc, Gamma);
+	g_renderer->SwapImpl(xfbAddr, fbWidth, fbStride, fbHeight, rc, ticks, Gamma);
 
 	if (XFBWrited)
 		g_renderer->m_fps_counter.Update();
@@ -644,15 +664,116 @@ void Renderer::Swap(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const 
 	XFBWrited = false;
 }
 
-void Renderer::FlipImageData(u8* data, int w, int h, int pixel_width)
+bool Renderer::IsFrameDumping()
 {
-	for (int y = 0; y < h / 2; ++y)
-	{
-		for (int x = 0; x < w; ++x)
-		{
-			for (int delta = 0; delta < pixel_width; ++delta)
-				std::swap(data[(y * w + x) * pixel_width + delta], data[((h - 1 - y) * w + x) * pixel_width + delta]);
-		}
-	}
+	if (s_screenshot.IsSet())
+		return true;
+
+#if defined(HAVE_LIBAV) || defined(_WIN32)
+	if (SConfig::GetInstance().m_DumpFrames)
+		return true;
+#endif
+
+	ShutdownFrameDumping();
+	return false;
 }
 
+void Renderer::ShutdownFrameDumping()
+{
+	if (!m_frame_dump_thread_running.IsSet())
+		return;
+
+	FinishFrameData();
+	m_frame_dump_thread_running.Clear();
+	m_frame_dump_start.Set();
+}
+
+void Renderer::DumpFrameData(const u8* data, int w, int h, int stride, const AVIDump::Frame& state, bool swap_upside_down, bool bgra)
+{
+	FinishFrameData();
+
+	m_frame_dump_config = FrameDumpConfig{ data, w, h, stride, swap_upside_down, bgra, state };
+
+	if (!m_frame_dump_thread_running.IsSet())
+	{
+		if (m_frame_dump_thread.joinable())
+			m_frame_dump_thread.join();
+		m_frame_dump_thread_running.Set();
+		m_frame_dump_thread = std::thread(&Renderer::RunFrameDumps, this);
+	}
+
+	m_frame_dump_start.Set();
+	m_frame_dump_frame_running = true;
+}
+
+void Renderer::FinishFrameData()
+{
+	if (!m_frame_dump_frame_running)
+		return;
+
+	m_frame_dump_done.Wait();
+	m_frame_dump_frame_running = false;
+}
+
+void Renderer::RunFrameDumps()
+{
+	Common::SetCurrentThreadName("FrameDumping");
+	bool avi_dump_started = false;
+
+	while (true)
+	{
+		m_frame_dump_start.Wait();
+		if (!m_frame_dump_thread_running.IsSet())
+			break;
+
+		auto config = m_frame_dump_config;
+		if (config.upside_down)
+		{
+			config.data = config.data + (config.height - 1) * config.stride;
+			config.stride = -config.stride;
+		}
+
+		// Save screenshot
+		if (s_screenshot.TestAndClear())
+		{
+			std::lock_guard<std::mutex> lk(s_criticalScreenshot);
+
+			if (TextureToPng(config.data, config.stride, s_sScreenshotName, config.width, config.height,
+				false, config.bgra))
+				OSD::AddMessage("Screenshot saved to " + s_sScreenshotName);
+
+			// Reset settings
+			s_sScreenshotName.clear();
+			s_screenshotCompleted.Set();
+		}
+
+#if defined(HAVE_LIBAV) || defined(_WIN32)
+		if (SConfig::GetInstance().m_DumpFrames)
+		{
+			if (!avi_dump_started)
+			{
+				if (AVIDump::Start(config.width, config.height, config.bgra))
+				{
+					avi_dump_started = true;
+				}
+				else
+				{
+					SConfig::GetInstance().m_DumpFrames = false;
+				}
+			}
+
+			AVIDump::AddFrame(config.data, config.width, config.height, config.stride, config.state);
+		}
+#endif
+
+		m_frame_dump_done.Set();
+	}
+
+#if defined(HAVE_LIBAV) || defined(_WIN32)
+	if (avi_dump_started)
+	{
+		avi_dump_started = false;
+		AVIDump::Stop();
+	}
+#endif
+}

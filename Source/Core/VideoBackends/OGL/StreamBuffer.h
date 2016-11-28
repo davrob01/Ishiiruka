@@ -32,21 +32,20 @@ public:
 	* Mapping invalidates the current buffer content,
 	* so it isn't allowed to access the old content any more.
 	*/
-	virtual std::pair<u8*, u32> Map(u32 size) = 0;
-	virtual void Unmap(u32 used_size) = 0;
+	virtual u32 Stream(u32 size, const void* src) = 0;
 
-	std::pair<u8*, u32> Map(u32 size, u32 stride)
+	u32 Stream(u32 size, u32 stride, const void* src)
 	{
 		u32 padding = m_iterator % stride;
 		if (padding)
 		{
 			m_iterator += stride - padding;
 		}
-		return Map(size);
+		return Stream(size, src);
 	}
-	bool NeedCPUBuffer()
+	bool CanStreamWithoutRestart(u32 size, u32 stride = 0)
 	{
-		return m_need_cpu_buffer;
+		return (m_iterator + size + stride) <= m_size;
 	}
 	const u32 m_buffer;
 
@@ -58,14 +57,13 @@ protected:
 
 	const u32 m_buffertype;
 	const u32 m_size;
-	const bool m_need_cpu_buffer;
 
 	u32 m_iterator;
 	u32 m_used_iterator;
 	u32 m_free_iterator;
 	
 private:
-	static constexpr int SYNC_POINTS = 4;
+	static constexpr int SYNC_POINTS = 8;
 	int Slot(u32 x) const
 	{
 		return x >> m_bit_per_slot;

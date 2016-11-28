@@ -66,53 +66,18 @@ void VertexManager::PrepareDrawBuffers(u32 stride)
 {
 	u32 vertex_data_size = IndexGenerator::GetNumVerts() * stride;
 	u32 index_data_size = IndexGenerator::GetIndexLen() * sizeof(u16);
-	if (s_vertexBuffer->NeedCPUBuffer())
-	{
-		auto buffer = s_vertexBuffer->Map(vertex_data_size, stride);
-		s_baseVertex = buffer.second / stride;
-		memcpy(buffer.first, m_cpu_v_buffer.data(), vertex_data_size);
-	}
-	if (s_indexBuffer->NeedCPUBuffer())
-	{
-		auto buffer = s_indexBuffer->Map(index_data_size);
-		s_index_offset = buffer.second;
-		memcpy(buffer.first, m_cpu_i_buffer.data(), index_data_size);
-	}
-	s_vertexBuffer->Unmap(vertex_data_size);
-	s_indexBuffer->Unmap(index_data_size);
-
+	s_baseVertex = s_vertexBuffer->Stream(vertex_data_size, stride, m_cpu_v_buffer.data()) / stride;
+	s_index_offset = s_indexBuffer->Stream(index_data_size, m_cpu_i_buffer.data());
 	ADDSTAT(stats.thisFrame.bytesVertexStreamed, vertex_data_size);
 	ADDSTAT(stats.thisFrame.bytesIndexStreamed, index_data_size);
 }
 
 void VertexManager::ResetBuffer(u32 stride)
 {
-	if (s_cull_all || s_vertexBuffer->NeedCPUBuffer())
-	{
-		s_pCurBufferPointer = s_pBaseBufferPointer = m_cpu_v_buffer.data();
-		s_pEndBufferPointer = s_pBaseBufferPointer + m_cpu_v_buffer.size();
-	}
-	else
-	{
-		u32 size = MAX_PRIMITIVES_PER_COMMAND * stride / 2;
-		auto buffer = s_vertexBuffer->Map(size, stride);
-		s_pCurBufferPointer = s_pBaseBufferPointer = buffer.first;
-		s_pEndBufferPointer = buffer.first + size;
-		s_baseVertex = buffer.second / stride;
-	}
-
-	if (s_cull_all || s_indexBuffer->NeedCPUBuffer())
-	{
-		s_index_buffer_base = m_cpu_i_buffer.data();
-		IndexGenerator::Start(m_cpu_i_buffer.data());
-	}
-	else
-	{
-		auto buffer = s_indexBuffer->Map(MAX_PRIMITIVES_PER_COMMAND * sizeof(u16) / 2);
-		s_index_buffer_base = (u16*)buffer.first;
-		IndexGenerator::Start(s_index_buffer_base);
-		s_index_offset = buffer.second;
-	}
+	s_pCurBufferPointer = s_pBaseBufferPointer = m_cpu_v_buffer.data();
+	s_pEndBufferPointer = s_pBaseBufferPointer + m_cpu_v_buffer.size();
+	s_index_buffer_base = m_cpu_i_buffer.data();
+	IndexGenerator::Start(m_cpu_i_buffer.data());
 }
 
 void VertexManager::Draw(u32 stride)
@@ -120,20 +85,16 @@ void VertexManager::Draw(u32 stride)
 	u32 index_size = IndexGenerator::GetIndexLen();
 	u32 max_index = IndexGenerator::GetNumVerts();
 	GLenum primitive_mode = 0;
-
-	switch (current_primitive_type)
+	static const GLenum modes[3] = {
+		GL_POINTS, 
+		GL_LINES,
+		GL_TRIANGLES
+	};
+	primitive_mode = modes[current_primitive_type];
+	bool cull_changed = primitive_mode != GL_TRIANGLES && bpmem.genMode.cullmode > 0;
+	if(cull_changed)
 	{
-	case PRIMITIVE_POINTS:
-		primitive_mode = GL_POINTS;
 		glDisable(GL_CULL_FACE);
-		break;
-	case PRIMITIVE_LINES:
-		primitive_mode = GL_LINES;
-		glDisable(GL_CULL_FACE);
-		break;
-	case PRIMITIVE_TRIANGLES:
-		primitive_mode = GL_TRIANGLES;
-		break;
 	}
 
 	if (g_ogl_config.bSupportsGLBaseVertex)
@@ -147,7 +108,7 @@ void VertexManager::Draw(u32 stride)
 
 	INCSTAT(stats.thisFrame.numDrawCalls);
 
-	if (current_primitive_type != PRIMITIVE_TRIANGLES)
+	if (cull_changed)
 		static_cast<Renderer*>(g_renderer.get())->SetGenerationMode();
 }
 
@@ -189,11 +150,15 @@ void VertexManager::vFlush(bool useDstAlpha)
 		glBindVertexArray(nativeVertexFmt->VAO);
 		m_last_vao = nativeVertexFmt->VAO;
 	}
-
 	PrepareDrawBuffers(stride);
-
+	g_renderer->ApplyState(false);
 	Draw(stride);
-
+	// If the GPU does not support dual-source blending, we can approximate the effect by drawing
+	// the object a second time, with the write mask set to alpha only using a shader that outputs
+	// the destination/constant alpha value (which would normally be SRC_COLOR.a).
+	//
+	// This is also used when logic ops and destination alpha is enabled, since we can't enable
+	// blending and logic ops concurrently.
 	const bool logic_op_enabled = bpmem.blendmode.logicopenable && bpmem.blendmode.logicmode != BlendMode::LogicOp::COPY && !bpmem.blendmode.blendenable;
 	// run through vertex groups again to set alpha
 	if (useDstAlpha && (!dualSourcePossible || logic_op_enabled))

@@ -16,12 +16,15 @@ private:
 	bool m_bBlendModeChanged;
 	bool m_bScissorRectChanged;
 	bool m_bViewPortChanged;
+	bool m_bViewPortChangedRequested;
 	TargetRectangle m_ScissorRect;
+	D3DVIEWPORT9 m_vp;
 	bool m_bGenerationModeChanged;
 	bool m_bDepthModeChanged;
 	bool m_bLogicOpModeChanged;
 
 	void _SetColorMask();
+	void _SetViewport();
 	void _SetBlendMode(bool forceUpdate);
 	void _SetScissorRect();
 	void _SetGenerationMode();
@@ -61,17 +64,15 @@ public:
 
 	TargetRectangle ConvertEFBRectangle(const EFBRectangle& rc);
 
-	void SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, float Gamma = 1.0f);
+	void SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const EFBRectangle& rc, u64 ticks, float Gamma = 1.0f);
 
 	void ClearScreen(const EFBRectangle& rc, bool colorEnable, bool alphaEnable, bool zEnable, u32 color, u32 z);
 
 	void ReinterpretPixelData(unsigned int convtype);
 
-	bool SaveScreenshot(const std::string &filename, const TargetRectangle &rc);
+	static void CheckForResize(bool &resized);
 
-	static void CheckForResize(bool &resized, bool &fullscreen, bool &fullscreencahnged);
-
-	int GetMaxTextureSize() override;
+	u32 GetMaxTextureSize() override;
 };
 
 }  // namespace DX9

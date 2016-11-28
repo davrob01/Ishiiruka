@@ -32,13 +32,10 @@
 #include "VideoBackends/OGL/TextureCache.h"
 #include "VideoBackends/OGL/VertexManager.h"
 
-#if defined(HAVE_LIBAV) || defined(_WIN32)
 #include "VideoCommon/AVIDump.h"
-#endif
 #include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/DriverDetails.h"
 #include "VideoCommon/Fifo.h"
-#include "VideoCommon/ImageWrite.h"
 #include "VideoCommon/IndexGenerator.h"
 #include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/PixelEngine.h"
@@ -51,7 +48,6 @@ void VideoConfig::UpdateProjectionHack()
 	::UpdateProjectionHack(g_Config.iPhackvalue, g_Config.sPhackvalue);
 }
 
-static int OSDInternalW, OSDInternalH;
 static int s_max_texture_size = 0;
 
 namespace OGL
@@ -145,7 +141,7 @@ static void APIENTRY ErrorCallback(GLenum source, GLenum type, GLuint id, GLenum
 		WARN_LOG(HOST_GPU, "id: %x, source: %s, type: %s - %s", id, s_source, s_type, message);
 		break;
 	case GL_DEBUG_SEVERITY_LOW_ARB:
-		WARN_LOG(HOST_GPU, "id: %x, source: %s, type: %s - %s", id, s_source, s_type, message);
+		DEBUG_LOG(HOST_GPU, "id: %x, source: %s, type: %s - %s", id, s_source, s_type, message);
 		break;
 	case GL_DEBUG_SEVERITY_NOTIFICATION:
 		DEBUG_LOG(HOST_GPU, "id: %x, source: %s, type: %s - %s", id, s_source, s_type, message);
@@ -327,15 +323,12 @@ static void InitDriverInfo()
 	default:
 		break;
 	}
-	DriverDetails::Init(vendor, driver, version, family);
+	DriverDetails::Init(DriverDetails::API_OPENGL, vendor, driver, version, family);
 }
 
 // Init functions
 Renderer::Renderer()
 {
-	OSDInternalW = 0;
-	OSDInternalH = 0;
-
 	s_blendMode = 0;
 
 	bool bSuccess = true;
@@ -420,7 +413,7 @@ Renderer::Renderer()
 				"GPU: Does your video card support OpenGL 3.1?");
 			bSuccess = false;
 		}
-		else if (DriverDetails::HasBug(DriverDetails::BUG_BROKENUBO))
+		else if (DriverDetails::HasBug(DriverDetails::BUG_BROKEN_UBO))
 		{
 			PanicAlert(
 				"Buggy GPU driver detected.\n"
@@ -440,7 +433,7 @@ Renderer::Renderer()
 		// OpenGL 3 doesn't provide GLES like float functions for depth.
 		// They are in core in OpenGL 4.1, so almost every driver should support them.
 		// But for the oldest ones, we provide fallbacks to the old double functions.
-		if (!GLExtensions::Supports("GL_ARB_ES2_compatibility") && GLInterface->GetMode() == GLInterfaceMode::MODE_OPENGL)
+		if (!GLExtensions::Supports("GL_ARB_ES2_compatibility"))
 		{
 			glDepthRangef = DepthRangef;
 			glClearDepthf = ClearDepthf;
@@ -460,7 +453,7 @@ Renderer::Renderer()
 		GLExtensions::Supports("GL_ARB_sample_shading");
 	g_Config.backend_info.bSupportsGeometryShaders =
 		GLExtensions::Version() >= 320 &&
-		!DriverDetails::HasBug(DriverDetails::BUG_BROKENGEOMETRYSHADERS);
+		!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_GEOMETRY_SHADERS);
 	g_Config.backend_info.bSupportsPaletteConversion =
 		GLExtensions::Supports("GL_ARB_texture_buffer_object") ||
 		GLExtensions::Supports("GL_OES_texture_buffer") ||
@@ -470,7 +463,7 @@ Renderer::Renderer()
 		(GLExtensions::Supports("GL_ARB_copy_image") || GLExtensions::Supports("GL_NV_copy_image") ||
 			GLExtensions::Supports("GL_EXT_copy_image") ||
 			GLExtensions::Supports("GL_OES_copy_image")) &&
-		!DriverDetails::HasBug(DriverDetails::BUG_BROKENCOPYIMAGE);
+		!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_COPYIMAGE);
 
 	// Desktop OpenGL supports the binding layout if it supports 420pack
 	// OpenGL ES 3.1 supports it implicitly without an extension
@@ -612,13 +605,6 @@ Renderer::Renderer()
 			g_ogl_config.eSupportedGLSLVersion = GLSL_400;
 			g_Config.backend_info.bSupportsSSAA = true;
 		}
-#ifdef _WIN32
-		g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_I4_AS_I8] = true;
-		g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_IA4_AS_IA8] = true;
-		g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_I8] = true;
-		g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_IA8] = true;
-		g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_RGB565] = true;
-#endif
 		g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_DXT1] = GLExtensions::Supports("GL_EXT_texture_compression_s3tc");
 		g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_DXT3] = g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_DXT1];
 		g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_DXT5] = g_Config.backend_info.bSupportedFormats[PC_TEX_FMT_DXT1];
@@ -707,7 +693,7 @@ Renderer::Renderer()
 
 	// Handle VSync on/off
 	s_vsync = g_ActiveConfig.IsVSync();
-	if (!DriverDetails::HasBug(DriverDetails::BUG_BROKENVSYNC))
+	if (!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_VSYNC))
 		GLInterface->SwapInterval(s_vsync);
 
 	// TODO: Move these somewhere else?
@@ -753,10 +739,23 @@ Renderer::Renderer()
 	glClearDepthf(1.0f);
 	UpdateActiveConfig();
 	ClearEFBCache();
+	m_bColorMaskChanged = true;
+	m_bBlendModeChanged = true;
+	m_bBlendModeForce = true;
+	m_bScissorRectChanged = true;
+	m_bViewPortChanged = true;
+	m_bGenerationModeChanged = true;
+	m_bDepthModeChanged = true;
+	m_bLogicOpModeChanged = true;
+	m_bViewPortChangedRequested = true;
 }
 
 Renderer::~Renderer()
 {
+	FlushFrameDump();
+	FinishFrameData();
+	if (m_frame_dumping_pbo[0])
+		glDeleteBuffers(2, m_frame_dumping_pbo.data());
 }
 
 void Renderer::Shutdown()
@@ -817,13 +816,23 @@ TargetRectangle Renderer::ConvertEFBRectangle(const EFBRectangle& rc)
 // Renderer::GetTargetHeight() = the fixed ini file setting
 // donkopunchstania - it appears scissorBR is the bottom right pixel inside the scissor box
 // therefore the width and height are (scissorBR + 1) - scissorTL
-void Renderer::SetScissorRect(const TargetRectangle& trc)
+
+void Renderer::_SetScissorRect()
 {
-	glScissor(trc.left, trc.bottom, trc.GetWidth(), trc.GetHeight());
+	m_bScissorRectChanged = false;
+	glScissor(m_ScissorRect.left, m_ScissorRect.bottom, m_ScissorRect.GetWidth(), m_ScissorRect.GetHeight());
 }
 
-void Renderer::SetColorMask()
+void Renderer::SetScissorRect(const TargetRectangle& trc)
 {
+	m_bScissorRectChanged = true;
+	m_ScissorRect = trc;
+	
+}
+
+void Renderer::_SetColorMask()
+{
+	m_bColorMaskChanged = false;
 	// Only enable alpha channel if it's supported by the current EFB format
 	GLenum ColorMask = GL_FALSE, AlphaMask = GL_FALSE;
 	if (bpmem.alpha_test.TestResult() != AlphaTest::FAIL)
@@ -834,6 +843,11 @@ void Renderer::SetColorMask()
 			AlphaMask = GL_TRUE;
 	}
 	glColorMask(ColorMask, ColorMask, ColorMask, AlphaMask);
+}
+
+void Renderer::SetColorMask()
+{
+	m_bColorMaskChanged = true;
 }
 
 void ClearEFBCache()
@@ -1093,68 +1107,83 @@ void Renderer::BBoxWrite(int index, u16 _value)
 	BBox::Set(index, value);
 }
 
+void Renderer::_SetViewport()
+{
+	if (m_bViewPortChangedRequested)
+	{
+		m_bViewPortChangedRequested = false;
+		// reversed gxsetviewport(xorig, yorig, width, height, nearz, farz)
+		// [0] = width/2
+		// [1] = height/2
+		// [2] = 16777215 * (farz - nearz)
+		// [3] = xorig + width/2 + 342
+		// [4] = yorig + height/2 + 342
+		// [5] = 16777215 * farz
+
+		int scissorXOff = bpmem.scissorOffset.x * 2;
+		int scissorYOff = bpmem.scissorOffset.y * 2;
+
+		// TODO: ceil, floor or just cast to int?
+		m_viewport.X = EFBToScaledXf(xfmem.viewport.xOrig - xfmem.viewport.wd - (float)scissorXOff);
+		m_viewport.Y = EFBToScaledYf((float)EFB_HEIGHT - xfmem.viewport.yOrig + xfmem.viewport.ht +
+			(float)scissorYOff);
+		m_viewport.Width = EFBToScaledXf(2.0f * xfmem.viewport.wd);
+		m_viewport.Height = EFBToScaledYf(-2.0f * xfmem.viewport.ht);
+		m_viewport.NearZ = MathUtil::Clamp<float>(
+			xfmem.viewport.farZ -
+			MathUtil::Clamp<float>(xfmem.viewport.zRange, -16777216.0f, 16777216.0f),
+			0.0f, 16777215.0f) /
+			16777216.0f;
+		m_viewport.FarZ = MathUtil::Clamp<float>(xfmem.viewport.farZ, 0.0f, 16777215.0f) / 16777216.0f;
+		if (m_viewport.Width < 0)
+		{
+			m_viewport.X += m_viewport.Width;
+			m_viewport.Width *= -1;
+		}
+		if (m_viewport.Height < 0)
+		{
+			m_viewport.Y += m_viewport.Height;
+			m_viewport.Height *= -1;
+		}
+
+		
+	}
+	if (m_bViewPortChanged)
+	{
+		// Update the view port
+		if (g_ogl_config.bSupportViewportFloat)
+		{
+			glViewportIndexedf(0, m_viewport.X, m_viewport.Y, m_viewport.Width, m_viewport.Height);
+		}
+		else
+		{
+			auto iceilf = [](float f) { return static_cast<GLint>(ceilf(f)); };
+			glViewport(iceilf(m_viewport.X), iceilf(m_viewport.Y), iceilf(m_viewport.Width), iceilf(m_viewport.Height));
+		}
+
+		// Set the reversed depth range. If we do depth clipping and depth range in the
+		// vertex shader we only need to ensure depth values don't exceed the maximum
+		// value supported by the console GPU. If not, we simply clamp the near/far values
+		// themselves to the maximum value as done above.
+		if (g_ActiveConfig.backend_info.bSupportsDepthClamp)
+		{
+			if (xfmem.viewport.zRange < 0.0f)
+				glDepthRangef(0.0f, GX_MAX_DEPTH);
+			else
+				glDepthRangef(GX_MAX_DEPTH, 0.0f);
+		}
+		else
+		{
+			glDepthRangef(m_viewport.FarZ, m_viewport.NearZ);
+		}
+		m_bViewPortChanged = false;
+	}
+}
+
 void Renderer::SetViewport()
 {
-	// reversed gxsetviewport(xorig, yorig, width, height, nearz, farz)
-	// [0] = width/2
-	// [1] = height/2
-	// [2] = 16777215 * (farz - nearz)
-	// [3] = xorig + width/2 + 342
-	// [4] = yorig + height/2 + 342
-	// [5] = 16777215 * farz
-
-	int scissorXOff = bpmem.scissorOffset.x * 2;
-	int scissorYOff = bpmem.scissorOffset.y * 2;
-
-	// TODO: ceil, floor or just cast to int?
-	float X = EFBToScaledXf(xfmem.viewport.xOrig - xfmem.viewport.wd - (float)scissorXOff);
-	float Y = EFBToScaledYf((float)EFB_HEIGHT - xfmem.viewport.yOrig + xfmem.viewport.ht +
-		(float)scissorYOff);
-	float Width = EFBToScaledXf(2.0f * xfmem.viewport.wd);
-	float Height = EFBToScaledYf(-2.0f * xfmem.viewport.ht);
-	float GLNear = MathUtil::Clamp<float>(
-		xfmem.viewport.farZ -
-		MathUtil::Clamp<float>(xfmem.viewport.zRange, -16777216.0f, 16777216.0f),
-		0.0f, 16777215.0f) /
-		16777216.0f;
-	float GLFar = MathUtil::Clamp<float>(xfmem.viewport.farZ, 0.0f, 16777215.0f) / 16777216.0f;
-	if (Width < 0)
-	{
-		X += Width;
-		Width *= -1;
-	}
-	if (Height < 0)
-	{
-		Y += Height;
-		Height *= -1;
-	}
-
-	// Update the view port
-	if (g_ogl_config.bSupportViewportFloat)
-	{
-		glViewportIndexedf(0, X, Y, Width, Height);
-	}
-	else
-	{
-		auto iceilf = [](float f) { return static_cast<GLint>(ceilf(f)); };
-		glViewport(iceilf(X), iceilf(Y), iceilf(Width), iceilf(Height));
-	}
-
-	// Set the reversed depth range. If we do depth clipping and depth range in the
-	// vertex shader we only need to ensure depth values don't exceed the maximum
-	// value supported by the console GPU. If not, we simply clamp the near/far values
-	// themselves to the maximum value as done above.
-	if (g_ActiveConfig.backend_info.bSupportsDepthClamp)
-	{
-		if (xfmem.viewport.zRange < 0.0f)
-			glDepthRangef(0.0f, GX_MAX_DEPTH);
-		else
-			glDepthRangef(GX_MAX_DEPTH, 0.0f);
-	}
-	else
-	{
-		glDepthRangef(GLFar, GLNear);
-	}
+	m_bViewPortChanged = true;
+	m_bViewPortChangedRequested = true;
 }
 
 void Renderer::ClearScreen(const EFBRectangle& rc, bool colorEnable, bool alphaEnable, bool zEnable,
@@ -1189,10 +1218,9 @@ void Renderer::ClearScreen(const EFBRectangle& rc, bool colorEnable, bool alphaE
 	ClearEFBCache();
 }
 
-void Renderer::BlitScreen(TargetRectangle dst_rect, TargetRectangle src_rect, TargetSize src_size, GLuint src_texture, GLuint src_depth_texture, float gamma)
+void Renderer::BlitScreen(const TargetRectangle& dst_rect, const TargetRectangle& src_rect, const TargetSize& src_size, GLuint src_texture, GLuint src_depth_texture, float gamma)
 {
 	TargetSize dst_size(s_backbuffer_width, s_backbuffer_height);
-
 	if (g_ActiveConfig.iStereoMode == STEREO_SBS || g_ActiveConfig.iStereoMode == STEREO_TAB)
 	{
 		TargetRectangle leftRc, rightRc;
@@ -1225,8 +1253,9 @@ void Renderer::ReinterpretPixelData(unsigned int convtype)
 	}
 }
 
-void Renderer::SetBlendMode(bool forceUpdate)
+void Renderer::_SetBlendMode(bool forceUpdate)
 {
+	m_bBlendModeChanged = false;
 	if (bpmem.blendmode.logicopenable && !bpmem.blendmode.blendenable && !forceUpdate)
 	{
 		return;
@@ -1237,6 +1266,10 @@ void Renderer::SetBlendMode(bool forceUpdate)
 
 	bool useDstAlpha = bpmem.dstalpha.enable && bpmem.blendmode.alphaupdate && target_has_alpha;
 	bool useDualSource = useDstAlpha && g_ActiveConfig.backend_info.bSupportsDualSourceBlend;
+
+	// Only use dual-source blending when required on drivers that don't support it very well.
+	if (DriverDetails::HasBug(DriverDetails::BUG_BROKEN_DUAL_SOURCE_BLENDING) && !useDstAlpha)
+		useDualSource = false;
 
 	const GLenum glSrcFactors[8] =
 	{
@@ -1336,19 +1369,21 @@ void Renderer::SetBlendMode(bool forceUpdate)
 	s_blendMode = newval;
 }
 
-static void DumpFrame(const std::vector<u8>& data, int w, int h)
+void Renderer::SetBlendMode(bool forceUpdate)
 {
-#if defined(HAVE_LIBAV) || defined(_WIN32)
-	if (SConfig::GetInstance().m_DumpFrames && !data.empty())
+	if (forceUpdate)
 	{
-		AVIDump::AddFrame(&data[0], w, h);
+		_SetBlendMode(forceUpdate);
 	}
-#endif
+	else
+	{
+		m_bBlendModeChanged = true;
+	}
 }
 
 // This function has the final picture. We adjust the aspect ratio here.
 void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
-	const EFBRectangle& rc, float Gamma)
+	const EFBRectangle& rc, u64 ticks, float Gamma)
 {
 	if (g_ogl_config.bSupportsDebug)
 	{
@@ -1358,11 +1393,8 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
 			glDisable(GL_DEBUG_OUTPUT);
 	}
 
-	static int w = 0, h = 0;
-	if (Fifo::WillSkipCurrentFrame() || (!XFBWrited && !g_ActiveConfig.RealXFBEnabled()) ||
-		!fbWidth || !fbHeight)
+	if ((!XFBWrited && !g_ActiveConfig.RealXFBEnabled()) || !fbWidth || !fbHeight)
 	{
-		DumpFrame(frame_data, w, h);
 		Core::Callback_VideoCopiedToXFB(false);
 		return;
 	}
@@ -1372,7 +1404,6 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
 		FramebufferManager::GetXFBSource(xfbAddr, fbStride, fbHeight, &xfbCount);
 	if (g_ActiveConfig.VirtualXFBEnabled() && (!xfbSourceList || xfbCount == 0))
 	{
-		DumpFrame(frame_data, w, h);
 		Core::Callback_VideoCopiedToXFB(false);
 		return;
 	}
@@ -1441,9 +1472,6 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
 
 				sourceRc.right -= Renderer::EFBToScaledX(fbStride - fbWidth);
 			}
-			// Tell the OSD Menu about the current internal resolution
-			OSDInternalW = xfbSource->sourceRc.GetWidth();
-			OSDInternalH = xfbSource->sourceRc.GetHeight();
 			TargetSize blit_size(xfbSource->texWidth, xfbSource->texHeight);
 
 			BlitScreen(drawRc, sourceRc, blit_size, xfbSource->texture, xfbSource->depthtexture, Gamma);
@@ -1483,78 +1511,8 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
 
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 
-	// Save screenshot
-	if (s_bScreenshot)
-	{
-		std::lock_guard<std::mutex> lk(s_criticalScreenshot);
+	DumpFrame(flipped_trc, ticks);
 
-		if (SaveScreenshot(s_sScreenshotName, flipped_trc))
-			OSD::AddMessage("Screenshot saved to " + s_sScreenshotName);
-
-		// Reset settings
-		s_sScreenshotName.clear();
-		s_bScreenshot = false;
-		s_screenshotCompleted.Set();
-	}
-
-	// Frame dumps are handled a little differently in Windows
-#if defined(HAVE_LIBAV) || defined(_WIN32)
-	if (SConfig::GetInstance().m_DumpFrames)
-	{
-		std::lock_guard<std::mutex> lk(s_criticalScreenshot);
-
-		if (frame_data.empty() || w != flipped_trc.GetWidth() || h != flipped_trc.GetHeight())
-		{
-			w = flipped_trc.GetWidth();
-			h = flipped_trc.GetHeight();
-			frame_data.resize(4 * w * h);
-		}
-
-		glPixelStorei(GL_PACK_ALIGNMENT, 1);
-		glReadPixels(flipped_trc.left, flipped_trc.bottom, w, h, GL_RGBA, GL_UNSIGNED_BYTE,
-			&frame_data[0]);
-		if (w > 0 && h > 0)
-		{
-			if (!bLastFrameDumped)
-			{
-				bAVIDumping = AVIDump::Start(w, h, AVIDump::DumpFormat::FORMAT_RGBA);
-				if (!bAVIDumping)
-				{
-					OSD::AddMessage("AVIDump Start failed", 2000);
-				}
-				else
-				{
-					OSD::AddMessage(StringFromFormat("Dumping Frames to \"%sframedump0.avi\" (%dx%d RGB24)",
-						File::GetUserPath(D_DUMPFRAMES_IDX).c_str(), w, h),
-						2000);
-				}
-			}
-			if (bAVIDumping)
-			{
-				FlipImageData(&frame_data[0], w, h, 4);
-				AVIDump::AddFrame(&frame_data[0], w, h);
-			}
-
-			bLastFrameDumped = true;
-		}
-		else
-		{
-			NOTICE_LOG(VIDEO, "Error reading framebuffer");
-		}
-	}
-	else
-	{
-		if (bLastFrameDumped && bAVIDumping)
-		{
-			std::vector<u8>().swap(frame_data);
-			w = h = 0;
-			AVIDump::Stop();
-			bAVIDumping = false;
-			OSD::AddMessage("Stop dumping frames", 2000);
-		}
-		bLastFrameDumped = false;
-	}
-#endif
 	// Finish up the current frame, print some stats
 
 	SetWindowSize(fbStride, fbHeight);
@@ -1643,12 +1601,16 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
 	OSD::DoCallbacks(OSD::CallbackType::OnFrame);
 	OSD::DrawMessages();
 
-	if (s_SurfaceNeedsChanged.IsSet())
+#ifdef ANDROID
+	if (s_surface_needs_change.IsSet())
 	{
+		GLInterface->UpdateHandle(s_new_surface_handle);
 		GLInterface->UpdateSurface();
-		s_SurfaceNeedsChanged.Clear();
-		s_ChangedSurface.Set();
+		s_new_surface_handle = nullptr;
+		s_surface_needs_change.Clear();
+		s_surface_changed.Set();
 	}
+#endif
 
 	// Copy the rendered frame to the real window
 	GLInterface->Swap();
@@ -1660,7 +1622,7 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
 	if (s_vsync != g_ActiveConfig.IsVSync())
 	{
 		s_vsync = g_ActiveConfig.IsVSync();
-		if (!DriverDetails::HasBug(DriverDetails::BUG_BROKENVSYNC))
+		if (!DriverDetails::HasBug(DriverDetails::BUG_BROKEN_VSYNC))
 			GLInterface->SwapInterval(s_vsync);
 	}
 
@@ -1690,6 +1652,63 @@ void Renderer::SwapImpl(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight,
 		m_post_processor->ReloadShaders();
 }
 
+void Renderer::FlushFrameDump()
+{
+	if (!m_last_frame_exported)
+		return;
+
+	FinishFrameData();
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, m_frame_dumping_pbo[0]);
+	m_frame_pbo_is_mapped[0] = true;
+	void* data = glMapBufferRange(
+		GL_PIXEL_PACK_BUFFER, 0, m_last_frame_width[0] * m_last_frame_height[0] * 4, GL_MAP_READ_BIT);
+	DumpFrameData(reinterpret_cast<u8*>(data), m_last_frame_width[0], m_last_frame_height[0],
+		m_last_frame_width[0] * 4, m_last_frame_state, true);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	m_last_frame_exported = false;
+}
+
+void Renderer::DumpFrame(const TargetRectangle& flipped_trc, u64 ticks)
+{
+	if (!IsFrameDumping())
+		return;
+
+	if (!m_frame_dumping_pbo[0])
+	{
+		glGenBuffers(2, m_frame_dumping_pbo.data());
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, m_frame_dumping_pbo[0]);
+	}
+	else
+	{
+		FlushFrameDump();
+		std::swap(m_frame_dumping_pbo[0], m_frame_dumping_pbo[1]);
+		std::swap(m_frame_pbo_is_mapped[0], m_frame_pbo_is_mapped[1]);
+		std::swap(m_last_frame_width[0], m_last_frame_width[1]);
+		std::swap(m_last_frame_height[0], m_last_frame_height[1]);
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, m_frame_dumping_pbo[0]);
+		if (m_frame_pbo_is_mapped[0])
+			glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+		m_frame_pbo_is_mapped[0] = false;
+	}
+
+	if (flipped_trc.GetWidth() != m_last_frame_width[0] ||
+		flipped_trc.GetHeight() != m_last_frame_height[0])
+	{
+		m_last_frame_width[0] = flipped_trc.GetWidth();
+		m_last_frame_height[0] = flipped_trc.GetHeight();
+		glBufferData(GL_PIXEL_PACK_BUFFER, m_last_frame_width[0] * m_last_frame_height[0] * 4, nullptr,
+			GL_STREAM_READ);
+	}
+
+	m_last_frame_state = AVIDump::FetchState(ticks);
+	m_last_frame_exported = true;
+
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(flipped_trc.left, flipped_trc.bottom, m_last_frame_width[0], m_last_frame_height[0],
+		GL_RGBA, GL_UNSIGNED_BYTE, 0);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+}
+
 // ALWAYS call RestoreAPIState for each ResetAPIState call you're doing
 void Renderer::ResetAPIState()
 {
@@ -1710,6 +1729,48 @@ void Renderer::ResetAPIState()
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 }
 
+void Renderer::ApplyState(bool bUseDstAlpha)
+{
+	if (m_bGenerationModeChanged)
+	{
+		_SetGenerationMode();
+	}
+
+	if (m_bDepthModeChanged || m_bViewPortChanged)
+	{
+		_SetDepthMode();
+	}
+
+	if (m_bColorMaskChanged)
+	{
+		_SetColorMask();
+	}
+
+	if (m_bLogicOpModeChanged)
+	{
+		_SetLogicOpMode();
+	}
+
+	if (m_bBlendModeChanged)
+	{
+		_SetBlendMode(m_bBlendModeForce);
+		m_bBlendModeForce = false;
+	}
+
+	if (m_bScissorRectChanged)
+	{
+		_SetScissorRect();
+	}
+
+	if (m_bViewPortChanged)
+	{
+		_SetViewport();
+	}
+
+	const VertexManager* const vm = static_cast<VertexManager*>(g_vertex_manager.get());
+	glBindBuffer(GL_ARRAY_BUFFER, vm->m_vertex_buffers);
+}
+
 void Renderer::RestoreAPIState()
 {
 	// Gets us back into a more game-like state.
@@ -1719,14 +1780,14 @@ void Renderer::RestoreAPIState()
 		glEnable(GL_CLIP_DISTANCE0);
 		glEnable(GL_CLIP_DISTANCE1);
 	}
-	SetGenerationMode();
-	BPFunctions::SetScissor();
-	SetColorMask();
-	SetDepthMode();
-	SetLogicOpMode();
-	SetBlendMode(true);
-	SetViewport();
-
+	m_bColorMaskChanged = true;
+	m_bGenerationModeChanged = true;
+	m_bScissorRectChanged = true;
+	m_bDepthModeChanged = true;
+	m_bLogicOpModeChanged = true;
+	m_bViewPortChanged = true;
+	m_bBlendModeForce = true;
+	m_bBlendModeChanged = true;
 	const VertexManager* const vm = static_cast<VertexManager*>(g_vertex_manager.get());
 	glBindBuffer(GL_ARRAY_BUFFER, vm->m_vertex_buffers);
 	if (vm->m_last_vao)
@@ -1735,8 +1796,9 @@ void Renderer::RestoreAPIState()
 	TextureCache::SetStage();
 }
 
-void Renderer::SetGenerationMode()
+void Renderer::_SetGenerationMode()
 {
+	m_bGenerationModeChanged = false;
 	// none, ccw, cw, ccw
 	if (bpmem.genMode.cullmode > 0)
 	{
@@ -1750,8 +1812,14 @@ void Renderer::SetGenerationMode()
 	}
 }
 
-void Renderer::SetDepthMode()
+void Renderer::SetGenerationMode()
 {
+	m_bGenerationModeChanged = true;
+}
+
+void Renderer::_SetDepthMode()
+{
+	m_bDepthModeChanged = false;
 	const GLenum glCmpFuncs[8] =
 	{
 		GL_NEVER,
@@ -1780,7 +1848,12 @@ void Renderer::SetDepthMode()
 	}
 }
 
-void Renderer::SetLogicOpMode()
+void Renderer::SetDepthMode()
+{
+	m_bDepthModeChanged = true;
+}
+
+void Renderer::_SetLogicOpMode()
 {
 	if (bpmem.blendmode.logicopenable && !bpmem.blendmode.blendenable)
 	{
@@ -1919,12 +1992,14 @@ void Renderer::SetLogicOpMode()
 	}
 }
 
+void Renderer::SetLogicOpMode()
+{
+	m_bLogicOpModeChanged = true;
+}
+
 void Renderer::SetDitherMode()
 {
-	if (bpmem.blendmode.dither)
-		glEnable(GL_DITHER);
-	else
-		glDisable(GL_DITHER);
+
 }
 
 void Renderer::SetSamplerState(int stage, int texindex, bool custom_tex)
@@ -1944,28 +2019,25 @@ void Renderer::SetInterlacingMode()
 
 namespace OGL
 {
-bool Renderer::SaveScreenshot(const std::string& filename, const TargetRectangle& back_rc)
-{
-	u32 W = back_rc.GetWidth();
-	u32 H = back_rc.GetHeight();
-	std::unique_ptr<u8[]> data(new u8[W * 4 * H]);
-	glPixelStorei(GL_PACK_ALIGNMENT, 1);
-
-	glReadPixels(back_rc.left, back_rc.bottom, W, H, GL_RGBA, GL_UNSIGNED_BYTE, data.get());
-
-	// Turn image upside down
-	FlipImageData(data.get(), W, H, 4);
-
-	return TextureToPng(data.get(), W * 4, filename, W, H, false);
-}
-
-int Renderer::GetMaxTextureSize()
+u32 Renderer::GetMaxTextureSize()
 {
 	// Right now nvidia seems to do something very weird if we try to cache GL_MAX_TEXTURE_SIZE in
 	// init. This is a workaround that lets
 	// us keep the perf improvement that caching it gives us.
 	if (s_max_texture_size == 0)
 		glGetIntegerv(GL_MAX_TEXTURE_SIZE, &s_max_texture_size);
-	return s_max_texture_size;
+	return static_cast<u32>(s_max_texture_size);
+}
+
+void Renderer::ChangeSurface(void* new_surface_handle)
+{
+	// Win32 polls the window size when redrawing, X11 runs an event loop in another thread.
+	// This is only necessary for Android at this point, although handling resizes here
+	// would be more efficient than polling.
+#ifdef ANDROID
+	s_new_surface_handle = new_surface_handle;
+	s_surface_needs_change.Set();
+	s_surface_changed.Wait();
+#endif
 }
 }
